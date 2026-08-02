@@ -1,6 +1,16 @@
 name = "LLMClient"
 version = "0.1.0"
 defaultTargets = ["LLMClient"]
+testDriver = "test"
+
+[[require]]
+name = "leancurl"
+git = "https://github.com/paulbutcher/leancurl"
+rev = "main"
 
 [[lean_lib]]
 name = "LLMClient"
+
+[[lean_exe]]
+name = "test"
+root = "Test.Main"

@@ -1,6 +1,16 @@
 {"version": "1.2.0",
  "packagesDir": ".lake/packages",
- "packages": [],
+ "packages":
+ [{"url": "https://github.com/paulbutcher/leancurl",
+   "type": "git",
+   "subDir": null,
+   "scope": "",
+   "rev": "e7b290fe0aa338a089bfb122304c75f3470ff621",
+   "name": "leancurl",
+   "manifestFile": "lake-manifest.json",
+   "inputRev": "main",
+   "inherited": false,
+   "configFile": "lakefile.lean"}],
  "name": "LLMClient",
  "lakeDir": ".lake",
  "fixedToolchain": false}
