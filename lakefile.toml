@@ -1,0 +1,6 @@
+name = "LLMClient"
+version = "0.1.0"
+defaultTargets = ["LLMClient"]
+
+[[lean_lib]]
+name = "LLMClient"
