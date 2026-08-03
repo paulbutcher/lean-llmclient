@@ -27,7 +27,7 @@ inductive Msg where
   | user (text : String)
   | assistant (text : String) (toolCalls : Array LLMClient.ToolCall := #[])
   | toolResult (id : String) (output : String)
-deriving Inhabited
+deriving Inhabited, BEq
 
 /-- A provider's response, translated out of its own wire format. Named `Reply` (not
 `Response`) since callers such as HTTP servers typically have their own `Response` type in
