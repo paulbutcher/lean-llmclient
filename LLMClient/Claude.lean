@@ -94,7 +94,8 @@ def sendRequest (config : LLMClient.Config) (apiKey : String) (history : Array L
           return .ok
             { text := extractText content,
               toolCalls := extractToolCalls content,
-              isRefusal := stopReasonOf json == "refusal" }
+              isRefusal := stopReasonOf json == "refusal",
+              isTruncated := stopReasonOf json == "max_tokens" }
         else
           return .error s!"Claude API error ({resp.status}): {errorMessageOf json}"
 

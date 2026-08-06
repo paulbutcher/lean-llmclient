@@ -72,6 +72,8 @@ def testOpenAI (r : Results) : Results :=
               ("finish_reason", "stop") ]]) ]
   let filteredResp := Json.mkObj
     [ ("choices", Json.arr #[Json.mkObj [("finish_reason", "content_filter")]]) ]
+  let lengthResp := Json.mkObj
+    [ ("choices", Json.arr #[Json.mkObj [("finish_reason", "length")]]) ]
   let malformedResp := Json.mkObj [("foo", Json.null)]
   let toolCallInput := Json.mkObj [("city", "Paris")]
   let toolCallsMessage := Json.mkObj
@@ -88,6 +90,8 @@ def testOpenAI (r : Results) : Results :=
       (finishReasonOf normalResp == "stop")
     |>.check "finishReasonOf content_filter response"
       (finishReasonOf filteredResp == "content_filter")
+    |>.check "finishReasonOf length response"
+      (finishReasonOf lengthResp == "length")
     |>.check "firstChoice on malformed response"
       (firstChoice malformedResp == Json.mkObj [])
     |>.check "messageOf on malformed response"
@@ -149,6 +153,7 @@ def testClaude (r : Results) : Results :=
   let content := #[textBlock, toolUseBlock, textBlock2, malformedToolUseBlock]
   let normalResp := Json.mkObj [("content", Json.arr content), ("stop_reason", "end_turn")]
   let refusalResp := Json.mkObj [("stop_reason", "refusal")]
+  let maxTokensResp := Json.mkObj [("stop_reason", "max_tokens")]
   let malformedResp := Json.mkObj [("foo", Json.null)]
   let errorResp := Json.mkObj [("error", Json.mkObj [("message", "boom")])]
   let r := r
@@ -164,6 +169,8 @@ def testClaude (r : Results) : Results :=
       (stopReasonOf normalResp == "end_turn")
     |>.check "stopReasonOf refusal"
       (stopReasonOf refusalResp == "refusal")
+    |>.check "stopReasonOf max_tokens"
+      (stopReasonOf maxTokensResp == "max_tokens")
     |>.check "stopReasonOf on malformed response"
       (stopReasonOf malformedResp == "")
     |>.check "extractText concatenates only text blocks in order"

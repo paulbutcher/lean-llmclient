@@ -36,6 +36,7 @@ structure Reply where
   text : String := ""
   toolCalls : Array LLMClient.ToolCall := #[]
   isRefusal : Bool := false
+  isTruncated : Bool := false
 deriving Inhabited
 
 /-- Tunable parameters for a request/response round trip. `apiUrl` and `model` have no

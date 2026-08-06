@@ -99,7 +99,8 @@ def sendRequest (config : LLMClient.Config) (apiKey : String) (history : Array L
           return .ok
             { text := content,
               toolCalls := extractToolCalls message,
-              isRefusal := finishReasonOf json == "content_filter" }
+              isRefusal := finishReasonOf json == "content_filter",
+              isTruncated := finishReasonOf json == "length" }
         else
           return .error s!"OpenAI API error ({resp.status}): {errorMessageOf json}"
 
