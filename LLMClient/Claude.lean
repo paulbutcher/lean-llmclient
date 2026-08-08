@@ -68,14 +68,23 @@ def extractToolCalls (content : Array Json) : Array LLMClient.ToolCall :=
       | _, _ => none
     else none
 
-/-- Posts one Messages API request with the given history; does not loop for tool use. -/
-def sendRequest (config : LLMClient.Config) (apiKey : String) (history : Array LLMClient.Msg)
-    (tools : Array LLMClient.Tool := #[]) : IO (Except String LLMClient.Reply) := do
-  let body := Json.mkObj
+/-- The Messages API takes a system prompt as a top-level `system` string field, a sibling of
+`messages` rather than a message inside it, so it's appended here instead of via `msgJson`. -/
+def requestBody (config : LLMClient.Config) (history : Array LLMClient.Msg)
+    (tools : Array LLMClient.Tool := #[]) : Json :=
+  let fields : List (String × Json) :=
     [ ("model", config.model),
       ("max_tokens", config.maxOutputTokens),
       ("tools", Json.arr (tools.map toolJson)),
       ("messages", Json.arr (history.map msgJson)) ]
+  Json.mkObj (match config.systemPrompt with
+    | some s => fields ++ [("system", Json.str s)]
+    | none => fields)
+
+/-- Posts one Messages API request with the given history; does not loop for tool use. -/
+def sendRequest (config : LLMClient.Config) (apiKey : String) (history : Array LLMClient.Msg)
+    (tools : Array LLMClient.Tool := #[]) : IO (Except String LLMClient.Reply) := do
+  let body := requestBody config history tools
   let headers : Headers :=
     [ ("x-api-key", apiKey),
       ("anthropic-version", "2023-06-01"),

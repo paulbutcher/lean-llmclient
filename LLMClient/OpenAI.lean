@@ -73,14 +73,25 @@ def extractToolCalls (message : Json) : Array LLMClient.ToolCall :=
       | _, _ => none
   | .error _ => #[]
 
-/-- Posts one Chat Completions request with the given history; does not loop for tool use. -/
-def sendRequest (config : LLMClient.Config) (apiKey : String) (history : Array LLMClient.Msg)
-    (tools : Array LLMClient.Tool := #[]) : IO (Except String LLMClient.Reply) := do
-  let body := Json.mkObj
+/-- Newer model families (including `gpt-5`) expect the system prompt as a leading message
+with role `developer` rather than the traditional `system`, so it's prepended here instead of
+via `msgJson`. -/
+def requestBody (config : LLMClient.Config) (history : Array LLMClient.Msg)
+    (tools : Array LLMClient.Tool := #[]) : Json :=
+  let developerMsg : Array Json :=
+    match config.systemPrompt with
+    | some s => #[Json.mkObj [("role", "developer"), ("content", s)]]
+    | none => #[]
+  Json.mkObj
     [ ("model", config.model),
       ("max_completion_tokens", config.maxOutputTokens),
       ("tools", Json.arr (tools.map toolJson)),
-      ("messages", Json.arr (history.map msgJson)) ]
+      ("messages", Json.arr (developerMsg ++ history.map msgJson)) ]
+
+/-- Posts one Chat Completions request with the given history; does not loop for tool use. -/
+def sendRequest (config : LLMClient.Config) (apiKey : String) (history : Array LLMClient.Msg)
+    (tools : Array LLMClient.Tool := #[]) : IO (Except String LLMClient.Reply) := do
+  let body := requestBody config history tools
   let headers : Headers :=
     [ ("authorization", s!"Bearer {apiKey}"),
       ("content-type", "application/json") ]

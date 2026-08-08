@@ -31,6 +31,8 @@ def sampleTool : LLMClient.Tool :=
 def sampleToolCall : LLMClient.ToolCall :=
   { id := "call_1", name := "get_weather", input := Json.mkObj [("city", "Paris")] }
 
+def sampleHistory : Array LLMClient.Msg := #[.user "hi"]
+
 def testOpenAI (r : Results) : Results :=
   open LLMClient.OpenAI in
   let r := r
@@ -106,6 +108,30 @@ def testOpenAI (r : Results) : Results :=
     |>.check "errorMessageOf falls back to compress on malformed response"
       (errorMessageOf malformedResp == malformedResp.compress)
   r
+
+def testOpenAISystemPrompt (r : Results) : Results :=
+  open LLMClient.OpenAI in
+  let cfgNone := defaultConfig
+  let cfgSome := { defaultConfig with systemPrompt := some "respond in GitHub Flavored Markdown" }
+  let bodyNone := requestBody cfgNone sampleHistory
+  let bodySome := requestBody cfgSome sampleHistory
+  let messagesOf (body : Json) : Array Json :=
+    (body.getObjVal? "messages" >>= Json.getArr?).toOption.getD #[]
+  r
+    |>.check "requestBody with no systemPrompt matches the body built without a developer message"
+      (bodyNone ==
+        Json.mkObj
+          [ ("model", cfgNone.model),
+            ("max_completion_tokens", cfgNone.maxOutputTokens),
+            ("tools", Json.arr #[]),
+            ("messages", Json.arr (sampleHistory.map msgJson)) ])
+    |>.check "requestBody with systemPrompt prepends a developer-role message with the prompt"
+      ((messagesOf bodySome).getD 0 (Json.mkObj []) ==
+        Json.mkObj [("role", "developer"), ("content", "respond in GitHub Flavored Markdown")])
+    |>.check "requestBody with systemPrompt leaves the rest of the history untouched"
+      ((messagesOf bodySome).extract 1 (messagesOf bodySome).size == sampleHistory.map msgJson)
+    |>.check "requestBody with systemPrompt adds exactly one extra message"
+      ((messagesOf bodySome).size == (messagesOf bodyNone).size + 1)
 
 def testClaude (r : Results) : Results :=
   open LLMClient.Claude in
@@ -184,8 +210,30 @@ def testClaude (r : Results) : Results :=
       (errorMessageOf malformedResp == malformedResp.compress)
   r
 
+def testClaudeSystemPrompt (r : Results) : Results :=
+  open LLMClient.Claude in
+  let cfgNone := defaultConfig
+  let cfgSome := { defaultConfig with systemPrompt := some "respond in GitHub Flavored Markdown" }
+  let bodyNone := requestBody cfgNone sampleHistory
+  let bodySome := requestBody cfgSome sampleHistory
+  r
+    |>.check "requestBody with no systemPrompt matches the body built without a system field"
+      (bodyNone ==
+        Json.mkObj
+          [ ("model", cfgNone.model),
+            ("max_tokens", cfgNone.maxOutputTokens),
+            ("tools", Json.arr #[]),
+            ("messages", Json.arr (sampleHistory.map msgJson)) ])
+    |>.check "requestBody with systemPrompt sets a top-level system string"
+      ((bodySome.getObjVal? "system" >>= Json.getStr?).toOption ==
+        some "respond in GitHub Flavored Markdown")
+    |>.check "requestBody with systemPrompt leaves messages untouched"
+      ((bodySome.getObjVal? "messages").toOption == (bodyNone.getObjVal? "messages").toOption)
+
 def main : IO UInt32 := do
   let r : Results := {}
   let r := testOpenAI r
+  let r := testOpenAISystemPrompt r
   let r := testClaude r
+  let r := testClaudeSystemPrompt r
   r.report

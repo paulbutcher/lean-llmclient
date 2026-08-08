@@ -45,6 +45,9 @@ structure Config where
   apiUrl : String
   model : String
   maxOutputTokens : Nat := 1024
+  /-- Fixed instruction sent with every request, independent of conversation history. Omitted
+  from the request entirely when `none`, rather than sent as an empty or null value. -/
+  systemPrompt : Option String := none
 
 /-- A backend capable of driving one request/response round trip against an LLM API. -/
 structure Provider where
