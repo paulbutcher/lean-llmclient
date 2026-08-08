@@ -1,5 +1,9 @@
 # Changelog
 
+## [0.3.0] - 2026-08-08
+
+Add optional system prompt support to Config.
+
 ## [0.2.0] - 2026-08-06
 
 Report truncated replies from Reply
