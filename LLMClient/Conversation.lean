@@ -25,7 +25,8 @@ private def go (provider : Provider) (apiKey : String) (tools : Array Tool)
     (history : Array Msg) (iterationsLeft : Nat) :
     IO (Except String (Array Msg × String)) := do
   if iterationsLeft == 0 then
-    return .error "the model kept calling tools without finishing; giving up."
+    let text := "The model kept calling tools without finishing; giving up."
+    return .ok (history.push (Msg.assistant text), text)
   onProgress .thinking
   match ← provider.sendRequest apiKey history tools with
   | .error e => return .error e
@@ -47,12 +48,15 @@ private def go (provider : Provider) (apiKey : String) (tools : Array Tool)
 termination_by iterationsLeft
 decreasing_by simp_all; omega
 
-/-- Keeps sending until the model stops asking for tools, replies, refuses, or its reply is
-truncated, whichever happens first; bounded by `config.maxIterations` so a model that never
-settles can't loop forever. `runTool` executes one tool call by name; it's a parameter (rather
-than this module knowing how tools are implemented) so this loop's control flow stays independent
-of any particular tool set. `config.onProgress` fires before each request (`.thinking`) and before
-each tool call (`.runningTool name`). -/
+/-- Keeps sending until the model stops asking for tools, replies, refuses, its reply is
+truncated, or `config.maxIterations` is exhausted, whichever happens first. `runTool` executes
+one tool call by name; it's a parameter (rather than this module knowing how tools are
+implemented) so this loop's control flow stays independent of any particular tool set.
+`config.onProgress` fires before each request (`.thinking`) and before each tool call
+(`.runningTool name`). Every one of those outcomes, including exhausting `maxIterations`, is
+returned as `.ok (history, text)`, since real conversation happened and `history` is worth
+keeping; `.error` is reserved for `provider.sendRequest` itself failing, when there's nothing
+new to preserve. -/
 def converseLoop (provider : Provider) (apiKey : String) (tools : Array Tool)
     (runTool : String → Json → IO String) (history : Array Msg) (config : LoopConfig := {}) :
     IO (Except String (Array Msg × String)) :=

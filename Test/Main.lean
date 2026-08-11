@@ -309,6 +309,8 @@ def testConverseLoop (r : Results) : IO Results := do
   let truncatedToolCalled ← truncatedToolCalled.get
   let r := r.check "converseLoop: isTruncated does not invoke runTool" (!truncatedToolCalled)
 
+  -- maxIterations := 0 gives up before ever calling the provider, so there's no history to
+  -- preserve; this is the one exhaustion shape that still stops immediately.
   let exhaustedProviderCalled ← IO.mkRef false
   let providerExhausted : LLMClient.Provider :=
     { name := "fake"
@@ -318,12 +320,69 @@ def testConverseLoop (r : Results) : IO Results := do
   let resultExhausted ←
     LLMClient.converseLoop providerExhausted "key" #[] runToolUnused #[LLMClient.Msg.user "hi"]
       ({ maxIterations := 0 } : LLMClient.LoopConfig)
-  let r := r.check "converseLoop: maxIterations := 0 gives up with the documented error"
+  let giveUpText := "The model kept calling tools without finishing; giving up."
+  let r := r.check "converseLoop: maxIterations := 0 gives up as .ok with the giving-up message"
     (match resultExhausted with
-      | .error e => e == "the model kept calling tools without finishing; giving up."
-      | .ok _ => false)
+      | .ok (h, t) => h == #[LLMClient.Msg.user "hi", LLMClient.Msg.assistant giveUpText] && t == giveUpText
+      | .error _ => false)
   let exhaustedProviderCalled ← exhaustedProviderCalled.get
-  let r := r.check "converseLoop: exhausting maxIterations never calls the provider" (!exhaustedProviderCalled)
+  let r := r.check "converseLoop: exhausting maxIterations := 0 never calls the provider" (!exhaustedProviderCalled)
+
+  -- A provider that always requests a tool call runs to the iteration budget, then gives up
+  -- with .ok, preserving every round's real tool call/result plus the giving-up message.
+  let alwaysToolCallCount ← IO.mkRef (0 : Nat)
+  let providerAlwaysToolCall : LLMClient.Provider :=
+    { name := "fake"
+      sendRequest := fun _ _ _ => do
+        let n ← alwaysToolCallCount.get
+        alwaysToolCallCount.set (n + 1)
+        let tc : LLMClient.ToolCall := { id := s!"call_{n}", name := "get_weather", input := Json.mkObj [("city", "Paris")] }
+        pure (.ok ({ text := "", toolCalls := #[tc] } : LLMClient.Reply)) }
+  let runToolAlwaysCalled ← IO.mkRef (0 : Nat)
+  let runToolAlways : String → Json → IO String := fun _ _ =>
+    runToolAlwaysCalled.modify (· + 1) *> pure "15°C, cloudy"
+  let maxIters := 2
+  let resultBudget ←
+    LLMClient.converseLoop providerAlwaysToolCall "key" #[] runToolAlways #[LLMClient.Msg.user "weather?"]
+      ({ maxIterations := maxIters } : LLMClient.LoopConfig)
+  let firstToolCall : LLMClient.ToolCall := { id := "call_0", name := "get_weather", input := Json.mkObj [("city", "Paris")] }
+  let r := r.check "converseLoop: exhausting a real tool-call budget returns .ok"
+    (match resultBudget with | .ok _ => true | .error _ => false)
+  let r := r.check "converseLoop: exhausted history size is user + 2 msgs/round × maxIterations + giving-up"
+    (match resultBudget with
+      | .ok (h, _) => h.size == 1 + 2 * maxIters + 1
+      | .error _ => false)
+  let r := r.check "converseLoop: exhausted history has the first round's tool call still present"
+    (match resultBudget with
+      | .ok (h, _) => h.getD 1 (LLMClient.Msg.user "") == LLMClient.Msg.assistant "" #[firstToolCall]
+      | .error _ => false)
+  let r := r.check "converseLoop: exhausted history has the first round's tool result still present"
+    (match resultBudget with
+      | .ok (h, _) => h.getD 2 (LLMClient.Msg.user "") == LLMClient.Msg.toolResult "call_0" "15°C, cloudy"
+      | .error _ => false)
+  let r := r.check "converseLoop: exhausted history's last entry is the giving-up assistant message"
+    (match resultBudget with
+      | .ok (h, _) => h.back? == some (LLMClient.Msg.assistant giveUpText)
+      | .error _ => false)
+  let r := r.check "converseLoop: exhausted reply text matches the giving-up message"
+    (match resultBudget with
+      | .ok (_, t) => t == giveUpText
+      | .error _ => false)
+  let runToolAlwaysCalled ← runToolAlwaysCalled.get
+  let r := r.check "converseLoop: provider/runTool are each called exactly maxIterations times"
+    (runToolAlwaysCalled == maxIters)
+
+  -- provider.sendRequest failing outright is the one remaining .error case: nothing new has
+  -- happened yet, so there's nothing to preserve.
+  let providerError : LLMClient.Provider :=
+    { name := "fake"
+      sendRequest := fun _ _ _ => pure (.error "boom") }
+  let resultError ←
+    LLMClient.converseLoop providerError "key" #[] runToolUnused #[LLMClient.Msg.user "hi"]
+  let r := r.check "converseLoop: a provider error still propagates as .error"
+    (match resultError with
+      | .error e => e == "boom"
+      | .ok _ => false)
 
   return r
 
