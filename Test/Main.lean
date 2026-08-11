@@ -4,6 +4,7 @@
 import Lean.Data.Json
 import LLMClient.OpenAI
 import LLMClient.Claude
+import LLMClient.Conversation
 
 open Lean (Json)
 
@@ -230,10 +231,107 @@ def testClaudeSystemPrompt (r : Results) : Results :=
     |>.check "requestBody with systemPrompt leaves messages untouched"
       ((bodySome.getObjVal? "messages").toOption == (bodyNone.getObjVal? "messages").toOption)
 
+def testConverseLoop (r : Results) : IO Results := do
+  -- No config is passed here, so the default `LoopConfig` (including its no-op `onProgress`)
+  -- is exercised too.
+  let provider1 : LLMClient.Provider :=
+    { name := "fake"
+      sendRequest := fun _ _ _ => pure (.ok ({ text := "hello", toolCalls := #[] } : LLMClient.Reply)) }
+  let runToolUnused : String → Json → IO String := fun _ _ => pure "should not be called"
+  let result1 ← LLMClient.converseLoop provider1 "key" #[] runToolUnused #[LLMClient.Msg.user "hi"]
+  let r := r.check "converseLoop: no tool calls returns immediately (default LoopConfig)"
+    (match result1 with
+      | .ok (h, t) => h == #[LLMClient.Msg.user "hi", LLMClient.Msg.assistant "hello" #[]] && t == "hello"
+      | .error _ => false)
+
+  let callCount ← IO.mkRef (0 : Nat)
+  let toolCall : LLMClient.ToolCall :=
+    { id := "call_1", name := "get_weather", input := Json.mkObj [("city", "Paris")] }
+  let provider2 : LLMClient.Provider :=
+    { name := "fake"
+      sendRequest := fun _ _ _ => do
+        let n ← callCount.get
+        callCount.set (n + 1)
+        if n == 0 then
+          pure (.ok ({ text := "", toolCalls := #[toolCall] } : LLMClient.Reply))
+        else
+          pure (.ok ({ text := "final answer", toolCalls := #[] } : LLMClient.Reply)) }
+  let toolCallsSeen ← IO.mkRef (#[] : Array (String × Json))
+  let runTool2 : String → Json → IO String := fun name input => do
+    toolCallsSeen.modify (·.push (name, input))
+    pure "15°C, cloudy"
+  let progressLog ← IO.mkRef (#[] : Array LLMClient.Progress)
+  let config2 : LLMClient.LoopConfig := { onProgress := fun p => progressLog.modify (·.push p) }
+  let result2 ← LLMClient.converseLoop provider2 "key" #[] runTool2 #[LLMClient.Msg.user "weather?"] config2
+  let expectedHistory2 : Array LLMClient.Msg :=
+    #[ LLMClient.Msg.user "weather?",
+       LLMClient.Msg.assistant "" #[toolCall],
+       LLMClient.Msg.toolResult "call_1" "15°C, cloudy",
+       LLMClient.Msg.assistant "final answer" #[] ]
+  let r := r.check "converseLoop: tool round trip ends with the final text and a toolResult in history"
+    (match result2 with
+      | .ok (h, t) => h == expectedHistory2 && t == "final answer"
+      | .error _ => false)
+  let toolCallsSeen ← toolCallsSeen.get
+  let r := r.check "converseLoop: runTool is invoked with the model's requested name/input"
+    (toolCallsSeen == #[("get_weather", Json.mkObj [("city", "Paris")])])
+  let progressSeen ← progressLog.get
+  let r := r.check "converseLoop: onProgress fires thinking, runningTool, thinking"
+    (match progressSeen.toList with
+      | [LLMClient.Progress.thinking, LLMClient.Progress.runningTool "get_weather", LLMClient.Progress.thinking] => true
+      | _ => false)
+
+  let refusalToolCalled ← IO.mkRef false
+  let providerRefusal : LLMClient.Provider :=
+    { name := "fake"
+      sendRequest := fun _ _ _ =>
+        pure (.ok ({ text := "", toolCalls := #[], isRefusal := true } : LLMClient.Reply)) }
+  let runToolRefusal : String → Json → IO String := fun _ _ => refusalToolCalled.set true *> pure "unused"
+  let resultRefusal ← LLMClient.converseLoop providerRefusal "key" #[] runToolRefusal #[LLMClient.Msg.user "hi"]
+  let r := r.check "converseLoop: isRefusal stops with the fixed decline message"
+    (match resultRefusal with
+      | .ok (_, t) => t == "The model declined to respond to that."
+      | .error _ => false)
+  let refusalToolCalled ← refusalToolCalled.get
+  let r := r.check "converseLoop: isRefusal does not invoke runTool" (!refusalToolCalled)
+
+  let truncatedToolCalled ← IO.mkRef false
+  let providerTruncated : LLMClient.Provider :=
+    { name := "fake"
+      sendRequest := fun _ _ _ =>
+        pure (.ok ({ text := "", toolCalls := #[], isTruncated := true } : LLMClient.Reply)) }
+  let runToolTruncated : String → Json → IO String := fun _ _ => truncatedToolCalled.set true *> pure "unused"
+  let resultTruncated ← LLMClient.converseLoop providerTruncated "key" #[] runToolTruncated #[LLMClient.Msg.user "hi"]
+  let r := r.check "converseLoop: isTruncated stops with the fixed cut-off message"
+    (match resultTruncated with
+      | .ok (_, t) => t == "The model's reply was cut off before it finished; try again."
+      | .error _ => false)
+  let truncatedToolCalled ← truncatedToolCalled.get
+  let r := r.check "converseLoop: isTruncated does not invoke runTool" (!truncatedToolCalled)
+
+  let exhaustedProviderCalled ← IO.mkRef false
+  let providerExhausted : LLMClient.Provider :=
+    { name := "fake"
+      sendRequest := fun _ _ _ =>
+        exhaustedProviderCalled.set true *>
+          pure (.ok ({ text := "hello", toolCalls := #[] } : LLMClient.Reply)) }
+  let resultExhausted ←
+    LLMClient.converseLoop providerExhausted "key" #[] runToolUnused #[LLMClient.Msg.user "hi"]
+      ({ maxIterations := 0 } : LLMClient.LoopConfig)
+  let r := r.check "converseLoop: maxIterations := 0 gives up with the documented error"
+    (match resultExhausted with
+      | .error e => e == "the model kept calling tools without finishing; giving up."
+      | .ok _ => false)
+  let exhaustedProviderCalled ← exhaustedProviderCalled.get
+  let r := r.check "converseLoop: exhausting maxIterations never calls the provider" (!exhaustedProviderCalled)
+
+  return r
+
 def main : IO UInt32 := do
   let r : Results := {}
   let r := testOpenAI r
   let r := testOpenAISystemPrompt r
   let r := testClaude r
   let r := testClaudeSystemPrompt r
+  let r ← testConverseLoop r
   r.report

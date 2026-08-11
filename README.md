@@ -73,6 +73,35 @@ match ← provider.sendRequest apiKey.get! history #[getWeather] with
       -- history.push (.assistant reply.text reply.toolCalls) |>.push (.toolResult call.id "15°C, cloudy")
 ```
 
+## Multi-turn tool loops
+
+The `Tools` example above shows a single round trip. Most tool-using conversations need several:
+send the result of each tool call back to the model and keep going until it stops asking for
+tools. `converseLoop` runs that exchange for you, in place of writing the loop yourself:
+
+```lean
+def runTool (name : String) (input : Json) : IO String :=
+  if name == "get_weather" then
+    let city := (input.getObjVal? "city" >>= Json.getStr?).toOption.getD ""
+    pure s!"15°C, cloudy in {city}" -- however you actually look this up
+  else
+    pure s!"unknown tool: {name}"
+
+let config : LoopConfig :=
+  { onProgress := fun
+      | .thinking => IO.println "model is thinking..."
+      | .runningTool name => IO.println s!"running tool: {name}" }
+
+match ← converseLoop provider apiKey.get! #[getWeather] runTool history config with
+| .error msg => IO.eprintln s!"request failed: {msg}"
+| .ok (_, text) => IO.println text
+```
+
+`config` is optional; drop it (`converseLoop provider apiKey.get! #[getWeather] runTool history`)
+to get the defaults: `maxIterations := 5` and no progress reporting. `maxIterations` bounds how
+many tool round trips are allowed before `converseLoop` gives up, since a model can in principle
+keep asking for tools forever.
+
 ## Development
 
 - `lake build` builds the library.

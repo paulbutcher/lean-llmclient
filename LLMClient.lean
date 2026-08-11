@@ -4,3 +4,4 @@
 import LLMClient.Provider
 import LLMClient.OpenAI
 import LLMClient.Claude
+import LLMClient.Conversation

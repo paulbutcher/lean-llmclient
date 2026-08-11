@@ -1,5 +1,9 @@
 # Changelog
 
+## [0.4.0] - 2026-08-11
+
+Add converseLoop for multi-turn tool-calling exchanges, with an optional progress hook.
+
 ## [0.3.0] - 2026-08-08
 
 Add optional system prompt support to Config.
