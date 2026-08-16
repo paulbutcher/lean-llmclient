@@ -31,16 +31,19 @@ import LLMClient
 open LLMClient
 
 def main : IO Unit := do
-  let apiKey ← IO.getEnv "ANTHROPIC_API_KEY" -- or however you source it
+  let some apiKey ← IO.getEnv "ANTHROPIC_API_KEY" -- or however you source it
+    | IO.eprintln "ANTHROPIC_API_KEY is not set"
   let provider := Claude.provider
   let history := #[Msg.user "What's the capital of France?"]
-  match ← provider.sendRequest apiKey.get! history with
+  match ← provider.sendRequest apiKey history with
   | .ok reply => IO.println reply.text
   | .error msg => IO.eprintln s!"request failed: {msg}"
 ```
 
 Swap `Claude.provider` for `OpenAI.provider` to talk to OpenAI instead; both accept an optional
-`Config` (`apiUrl`, `model`, `maxOutputTokens`) if you want to override the defaults.
+`Config` (`apiUrl`, `model`, `maxOutputTokens`, `systemPrompt`) if you want to override the
+defaults. `systemPrompt` is sent as a top-level `system` field by Claude and as a leading
+`developer` message by OpenAI; leave it `none` to omit it from the request entirely.
 
 `tools` defaults to `#[]`, so it can be left off when you're not offering any (as above).
 
@@ -62,7 +65,7 @@ def getWeather : Tool :=
 
 def history := #[Msg.user "What's the weather in Paris?"]
 
-match ← provider.sendRequest apiKey.get! history #[getWeather] with
+match ← provider.sendRequest apiKey history #[getWeather] with
 | .error msg => IO.eprintln s!"request failed: {msg}"
 | .ok reply =>
   for call in reply.toolCalls do
@@ -92,12 +95,12 @@ let config : LoopConfig :=
       | .thinking => IO.println "model is thinking..."
       | .runningTool name => IO.println s!"running tool: {name}" }
 
-match ← converseLoop provider apiKey.get! #[getWeather] runTool history config with
+match ← converseLoop provider apiKey #[getWeather] runTool history config with
 | .error msg => IO.eprintln s!"request failed: {msg}"
 | .ok (_, text) => IO.println text
 ```
 
-`config` is optional; drop it (`converseLoop provider apiKey.get! #[getWeather] runTool history`)
+`config` is optional; drop it (`converseLoop provider apiKey #[getWeather] runTool history`)
 to get the defaults: `maxIterations := 5` and no progress reporting. `maxIterations` bounds how
 many tool round trips are allowed before `converseLoop` gives up, since a model can in principle
 keep asking for tools forever.
@@ -105,5 +108,8 @@ keep asking for tools forever.
 ## Development
 
 - `lake build` builds the library.
-- `lake test` runs the unit tests (pure JSON encode/decode checks against each provider's wire
-  format; it does not make network calls, so no API key is needed to run it).
+- `lake test` runs the tests. They live in the `test/` subproject, which has its own lakefile and
+  requires this package by path, so test-only dependencies never reach a downstream consumer.
+- The tests are pure JSON encode/decode checks against each provider's wire format, plus
+  `test/Theorems.lean`, which proves the round-trip and message-shape invariants those formats
+  depend on. Nothing makes a network call, so no API key is needed to run them.

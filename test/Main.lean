@@ -5,6 +5,7 @@ import Lean.Data.Json
 import LLMClient.OpenAI
 import LLMClient.Claude
 import LLMClient.Conversation
+import Theorems
 
 open Lean (Json)
 
@@ -386,11 +387,13 @@ def testConverseLoop (r : Results) : IO Results := do
 
   return r
 
-def main : IO UInt32 := do
+def runAll : IO Results := do
   let r : Results := {}
   let r := testOpenAI r
   let r := testOpenAISystemPrompt r
   let r := testClaude r
   let r := testClaudeSystemPrompt r
-  let r ← testConverseLoop r
-  r.report
+  testConverseLoop r
+
+def main : IO UInt32 := do
+  (← runAll).report

@@ -1,0 +1,17 @@
+name = "test"
+defaultTargets = ["test"]
+testDriver = "test"
+
+[leanOptions]
+warningAsError = true
+
+[[require]]
+name = "LLMClient"
+path = ".."
+
+[[lean_lib]]
+name = "Theorems"
+
+[[lean_exe]]
+name = "test"
+root = "Main"
