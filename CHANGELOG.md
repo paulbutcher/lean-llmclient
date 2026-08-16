@@ -1,5 +1,9 @@
 # Changelog
 
+## [0.4.2] - 2026-08-16
+
+Tidying up and restructuring.
+
 ## [0.4.1] - 2026-08-11
 
 `converseLoop` now returns `.ok (history, text)` when it exhausts

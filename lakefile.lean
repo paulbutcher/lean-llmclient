@@ -6,7 +6,7 @@ import Lake
 open System Lake DSL
 
 package LLMClient where
-  version := v!"0.4.1"
+  version := v!"0.4.2"
   leanOptions := #[⟨`warningAsError, true⟩]
 
 require leancurl from git "https://github.com/paulbutcher/leancurl"@"main"
