@@ -105,4 +105,62 @@ theorem openai_requestBody_messageCount (config : Config) (history : Array Msg)
   simp only [OpenAI.requestBody, messagesOf_openai]
   cases config.systemPrompt <;> simp <;> omega
 
+
+/-- Converse nests the reply a level deeper than Anthropic does, so the round-trip theorems below
+have to rebuild that envelope rather than hand `msgJson`'s output straight back. -/
+private def responseOf (message : Json) : Json :=
+  Json.mkObj [("output", Json.mkObj [("message", message)])]
+
+private theorem contentOf_responseOf (r : Json) (a : Array Json) :
+    Bedrock.contentOf (responseOf (Json.mkObj [("role", r), ("content", Json.arr a)])) = a := rfl
+
+private theorem bedrock_extractToolCalls_append (x y : Array Json) :
+    Bedrock.extractToolCalls (x ++ y) =
+      Bedrock.extractToolCalls x ++ Bedrock.extractToolCalls y := by
+  simp [Bedrock.extractToolCalls, Array.filterMap_append]
+
+/-- Every text block Bedrock sends back survives the encode/decode round trip, concatenated in
+order and with the tool-call blocks contributing nothing. -/
+theorem bedrock_extractText_roundTrip (text : String) (tcs : Array ToolCall) :
+    Bedrock.extractText (Bedrock.contentOf (responseOf (Bedrock.msgJson (.assistant text tcs)))) =
+      text := by
+  simp only [Bedrock.msgJson, contentOf_responseOf, Bedrock.extractText]
+  rw [Array.foldl_append, foldl_map_eq_init _ _ _ _ (by intro b tc; rfl)]
+  split
+  · simp_all [String.isEmpty_iff]
+  · rfl
+
+/-- Every tool call survives the encode/decode round trip unchanged and in order, whatever text
+accompanies it. -/
+theorem bedrock_extractToolCalls_roundTrip (text : String) (tcs : Array ToolCall) :
+    Bedrock.extractToolCalls
+      (Bedrock.contentOf (responseOf (Bedrock.msgJson (.assistant text tcs)))) = tcs := by
+  simp only [Bedrock.msgJson, contentOf_responseOf]
+  rw [bedrock_extractToolCalls_append]
+  rw [show Bedrock.extractToolCalls (tcs.map Bedrock.toolCallJson) = tcs from
+    filterMap_map_id _ _ _ (fun _ => rfl)]
+  split
+  · rw [show Bedrock.extractToolCalls (#[] : Array Json) = #[] from rfl]
+    simp
+  · rw [show Bedrock.extractToolCalls #[Json.mkObj [("text", Json.str text)]] = #[] from rfl]
+    simp
+
+/-- Converse rejects any role outside this pair, so no `Msg` may encode to another one. -/
+theorem bedrock_msgJson_role (m : Msg) :
+    (Bedrock.msgJson m).getObjVal? "role" = .ok (Json.str "user") ∨
+      (Bedrock.msgJson m).getObjVal? "role" = .ok (Json.str "assistant") := by
+  cases m
+  · exact Or.inl rfl
+  · exact Or.inr rfl
+  · exact Or.inl rfl
+
+/-- Converse rejects a `toolConfig` carrying an empty `tools` array, so the key has to be absent
+rather than empty exactly when there are no tools. -/
+theorem bedrock_requestBody_toolConfig (config : Bedrock.Config) (history : Array Msg)
+    (tools : Array Tool) :
+    ((Bedrock.requestBody config history tools).getObjVal? "toolConfig").toOption.isSome =
+      !tools.isEmpty := by
+  simp only [Bedrock.requestBody]
+  cases config.systemPrompt <;> split <;> rename_i h <;> simp only [h] <;> rfl
+
 end LLMClient.Test

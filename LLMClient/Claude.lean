@@ -1,10 +1,14 @@
 -- Copyright (c) 2026 Paul Butcher. All rights reserved.
 -- Released under Apache 2.0 license as described in the file LICENSE.
 
-import Lean.Data.Json
+module
+
+public import Lean.Data.Json
 import Lean.Data.Json.Parser
 import Leancurl
-import LLMClient.Provider
+public import LLMClient.Provider
+
+public section
 
 namespace LLMClient.Claude
 
@@ -108,7 +112,7 @@ def sendRequest (config : LLMClient.Config) (apiKey : String) (history : Array L
         else
           return .error s!"Claude API error ({resp.status}): {errorMessageOf json}"
 
-def provider (config : LLMClient.Config := defaultConfig) : LLMClient.Provider :=
-  { name := "claude", sendRequest := fun apiKey history tools => sendRequest config apiKey history tools }
+def provider (apiKey : String) (config : LLMClient.Config := defaultConfig) : LLMClient.Provider :=
+  { name := "claude", sendRequest := fun history tools => sendRequest config apiKey history tools }
 
 end LLMClient.Claude

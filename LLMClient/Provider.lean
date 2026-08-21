@@ -1,7 +1,11 @@
 -- Copyright (c) 2026 Paul Butcher. All rights reserved.
 -- Released under Apache 2.0 license as described in the file LICENSE.
 
-import Lean.Data.Json
+module
+
+public import Lean.Data.Json
+
+public section
 
 namespace LLMClient
 
@@ -49,11 +53,16 @@ structure Config where
   from the request entirely when `none`, rather than sent as an empty or null value. -/
   systemPrompt : Option String := none
 
-/-- A backend capable of driving one request/response round trip against an LLM API. -/
+/-- A backend capable of driving one request/response round trip against an LLM API.
+
+Credentials are supplied when a provider is constructed rather than on each call, because what
+they are differs by backend: a bearer token for some, a set of AWS credentials to sign with for
+others. Constructing a provider is just closing over them, so a caller holding credentials that
+expire rebuilds it as often as it needs to. -/
 structure Provider where
   name : String
   sendRequest :
-    (apiKey : String) → (history : Array LLMClient.Msg) → (tools : Array LLMClient.Tool := #[]) →
+    (history : Array LLMClient.Msg) → (tools : Array LLMClient.Tool := #[]) →
       IO (Except String LLMClient.Reply)
 
 end LLMClient

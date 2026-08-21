@@ -2,10 +2,11 @@
 
 A provider-agnostic Lean 4 client for LLM chat APIs. `LLMClient` defines a single
 request/response vocabulary (`Msg`, `Tool`, `ToolCall`, `Reply`, `Config`) and a `Provider`
-interface that drives one round trip against a backend; `LLMClient.OpenAI` and `LLMClient.Claude`
-implement that interface against the OpenAI Chat Completions and Anthropic Messages APIs
-respectively. Callers write their conversation loop once against `Provider`/`Msg`/`Reply` and swap
-backends by swapping which `Provider` they construct.
+interface that drives one round trip against a backend; `LLMClient.OpenAI`, `LLMClient.Claude` and
+`LLMClient.Bedrock` implement that interface against the OpenAI Chat Completions, Anthropic
+Messages and Amazon Bedrock Converse APIs respectively. Callers write their conversation loop
+once against `Provider`/`Msg`/`Reply` and swap backends by swapping which `Provider` they
+construct.
 
 ## Adding it to your project
 
@@ -21,7 +22,10 @@ rev = "main"
 `LLMClient` depends on [`leancurl`](https://github.com/paulbutcher/leancurl) for HTTP, which
 compiles a small C shim against `libcurl`. Building anything that depends on `LLMClient` therefore
 needs `pkg-config`, `libcurl` development headers, and a C compiler available (e.g. on Debian/
-Ubuntu, `pkg-config` and `libcurl4-openssl-dev`).
+Ubuntu, `pkg-config` and `libcurl4-openssl-dev`). It also depends on
+[`lean-aws`](https://github.com/paulbutcher/lean-aws) and, through it,
+[`leancrypto`](https://github.com/paulbutcher/leancrypto) for request signing; both are pure
+Lean and add no build requirements of their own.
 
 ## Usage
 
@@ -33,24 +37,28 @@ open LLMClient
 def main : IO Unit := do
   let some apiKey ← IO.getEnv "ANTHROPIC_API_KEY" -- or however you source it
     | IO.eprintln "ANTHROPIC_API_KEY is not set"
-  let provider := Claude.provider
+  let provider := Claude.provider apiKey
   let history := #[Msg.user "What's the capital of France?"]
-  match ← provider.sendRequest apiKey history with
+  match ← provider.sendRequest history with
   | .ok reply => IO.println reply.text
   | .error msg => IO.eprintln s!"request failed: {msg}"
 ```
 
-Swap `Claude.provider` for `OpenAI.provider` to talk to OpenAI instead; both accept an optional
-`Config` (`apiUrl`, `model`, `maxOutputTokens`, `systemPrompt`) if you want to override the
-defaults. `systemPrompt` is sent as a top-level `system` field by Claude and as a leading
-`developer` message by OpenAI; leave it `none` to omit it from the request entirely.
+Swap `Claude.provider` for `OpenAI.provider` to talk to OpenAI instead; both take the API key
+first and then an optional `Config` (`apiUrl`, `model`, `maxOutputTokens`, `systemPrompt`) if you
+want to override the defaults. `systemPrompt` is sent as a top-level `system` field by Claude and
+as a leading `developer` message by OpenAI; leave it `none` to omit it from the request entirely.
+`Bedrock.provider creds (Bedrock.defaultConfig region)` reaches everything Amazon Bedrock hosts
+through its Converse API, chosen with `Config.model`; it signs with SigV4, so it takes AWS
+credentials in place of an API key, and its `Config` carries `region` rather than `apiUrl`.
+`Bedrock.credentialsFromEnv` and `Bedrock.regionFromEnv` read the usual `AWS_*` variables.
 
 `tools` defaults to `#[]`, so it can be left off when you're not offering any (as above).
 
 ## Tools
 
 Tool calls round-trip through `Tool` (what you expose to the model) and `ToolCall`/`Msg.toolResult`
-(what the model asks for and what you feed back), independent of either provider's wire format:
+(what the model asks for and what you feed back), independent of any provider's wire format:
 
 ```lean
 open Lean (Json)
@@ -65,7 +73,7 @@ def getWeather : Tool :=
 
 def history := #[Msg.user "What's the weather in Paris?"]
 
-match ← provider.sendRequest apiKey history #[getWeather] with
+match ← provider.sendRequest history #[getWeather] with
 | .error msg => IO.eprintln s!"request failed: {msg}"
 | .ok reply =>
   for call in reply.toolCalls do
@@ -95,12 +103,12 @@ let config : LoopConfig :=
       | .thinking => IO.println "model is thinking..."
       | .runningTool name => IO.println s!"running tool: {name}" }
 
-match ← converseLoop provider apiKey #[getWeather] runTool history config with
+match ← converseLoop provider #[getWeather] runTool history config with
 | .error msg => IO.eprintln s!"request failed: {msg}"
 | .ok (_, text) => IO.println text
 ```
 
-`config` is optional; drop it (`converseLoop provider apiKey #[getWeather] runTool history`)
+`config` is optional; drop it (`converseLoop provider #[getWeather] runTool history`)
 to get the defaults: `maxIterations := 5` and no progress reporting. `maxIterations` bounds how
 many tool round trips are allowed before `converseLoop` gives up, since a model can in principle
 keep asking for tools forever.

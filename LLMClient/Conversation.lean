@@ -1,8 +1,12 @@
 -- Copyright (c) 2026 Paul Butcher. All rights reserved.
 -- Released under Apache 2.0 license as described in the file LICENSE.
 
-import LLMClient.Provider
-import Lean.Data.Json
+module
+
+public import LLMClient.Provider
+public import Lean.Data.Json
+
+public section
 
 namespace LLMClient
 
@@ -20,7 +24,7 @@ structure LoopConfig where
   maxIterations : Nat := 5
   onProgress : Progress → IO Unit := fun _ => pure ()
 
-private def go (provider : Provider) (apiKey : String) (tools : Array Tool)
+private def go (provider : Provider) (tools : Array Tool)
     (runTool : String → Json → IO String) (onProgress : Progress → IO Unit)
     (history : Array Msg) (iterationsLeft : Nat) :
     IO (Except String (Array Msg × String)) := do
@@ -28,7 +32,7 @@ private def go (provider : Provider) (apiKey : String) (tools : Array Tool)
     let text := "The model kept calling tools without finishing; giving up."
     return .ok (history.push (Msg.assistant text), text)
   onProgress .thinking
-  match ← provider.sendRequest apiKey history tools with
+  match ← provider.sendRequest history tools with
   | .error e => return .error e
   | .ok resp =>
     let history := history.push (Msg.assistant resp.text resp.toolCalls)
@@ -44,7 +48,7 @@ private def go (provider : Provider) (apiKey : String) (tools : Array Tool)
         onProgress (.runningTool tc.name)
         let output ← runTool tc.name tc.input
         history := history.push (Msg.toolResult tc.id output)
-      go provider apiKey tools runTool onProgress history (iterationsLeft - 1)
+      go provider tools runTool onProgress history (iterationsLeft - 1)
 termination_by iterationsLeft
 decreasing_by simp_all; omega
 
@@ -57,9 +61,9 @@ implemented) so this loop's control flow stays independent of any particular too
 returned as `.ok (history, text)`, since real conversation happened and `history` is worth
 keeping; `.error` is reserved for `provider.sendRequest` itself failing, when there's nothing
 new to preserve. -/
-def converseLoop (provider : Provider) (apiKey : String) (tools : Array Tool)
+def converseLoop (provider : Provider) (tools : Array Tool)
     (runTool : String → Json → IO String) (history : Array Msg) (config : LoopConfig := {}) :
     IO (Except String (Array Msg × String)) :=
-  go provider apiKey tools runTool config.onProgress history config.maxIterations
+  go provider tools runTool config.onProgress history config.maxIterations
 
 end LLMClient
