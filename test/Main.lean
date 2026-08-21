@@ -1,14 +1,12 @@
 -- Copyright (c) 2026 Paul Butcher. All rights reserved.
 -- Released under Apache 2.0 license as described in the file LICENSE.
 
-import Lean.Data.Json
+import Json
 import LLMClient.OpenAI
 import LLMClient.Claude
 import LLMClient.Bedrock
 import LLMClient.Conversation
 import Theorems
-
-open Lean (Json)
 
 /-- Collects every failing check by name instead of aborting at the first one, so a single run
 reports the full set of regressions. -/
@@ -125,7 +123,7 @@ def testOpenAISystemPrompt (r : Results) : Results :=
       (bodyNone ==
         Json.mkObj
           [ ("model", cfgNone.model),
-            ("max_completion_tokens", cfgNone.maxOutputTokens),
+            ("max_completion_tokens", Json.ofNat cfgNone.maxOutputTokens),
             ("tools", Json.arr #[]),
             ("messages", Json.arr (sampleHistory.map msgJson)) ])
     |>.check "requestBody with systemPrompt prepends a developer-role message with the prompt"
@@ -224,7 +222,7 @@ def testClaudeSystemPrompt (r : Results) : Results :=
       (bodyNone ==
         Json.mkObj
           [ ("model", cfgNone.model),
-            ("max_tokens", cfgNone.maxOutputTokens),
+            ("max_tokens", Json.ofNat cfgNone.maxOutputTokens),
             ("tools", Json.arr #[]),
             ("messages", Json.arr (sampleHistory.map msgJson)) ])
     |>.check "requestBody with systemPrompt sets a top-level system string"
@@ -480,7 +478,7 @@ def testBedrockRequestBody (r : Results) : Results :=
       (bodyNone ==
         Json.mkObj
           [ ("messages", Json.arr (sampleHistory.map msgJson)),
-            ("inferenceConfig", Json.mkObj [("maxTokens", cfgNone.maxOutputTokens)]) ])
+            ("inferenceConfig", Json.mkObj [("maxTokens", Json.ofNat cfgNone.maxOutputTokens)]) ])
     |>.check "requestBody names the model in the path rather than the body"
       ((bodyNone.getObjVal? "model").toOption == none)
     |>.check "requestBody with systemPrompt sets a top-level system block array"

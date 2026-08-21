@@ -5,8 +5,6 @@ import LLMClient
 
 namespace LLMClient.Test
 
-open Lean (Json)
-
 private theorem foldl_eq_init {α β : Type _} (f : β → α → β) (init : β) (a : Array α)
     (h : ∀ b x, f b x = b) : a.foldl f init = init := by
   rw [← Array.foldl_toList]

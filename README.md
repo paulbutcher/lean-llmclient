@@ -23,9 +23,11 @@ rev = "main"
 compiles a small C shim against `libcurl`. Building anything that depends on `LLMClient` therefore
 needs `pkg-config`, `libcurl` development headers, and a C compiler available (e.g. on Debian/
 Ubuntu, `pkg-config` and `libcurl4-openssl-dev`). It also depends on
+[`lean-json`](https://github.com/paulbutcher/lean-json) for the `Json` type that `Tool.schema`,
+`ToolCall.input` and `runTool` are written in, and on
 [`lean-aws`](https://github.com/paulbutcher/lean-aws) and, through it,
-[`leancrypto`](https://github.com/paulbutcher/leancrypto) for request signing; both are pure
-Lean and add no build requirements of their own.
+[`leancrypto`](https://github.com/paulbutcher/leancrypto) for request signing; those three are
+pure Lean and add no build requirements of their own.
 
 ## Usage
 
@@ -58,11 +60,11 @@ credentials in place of an API key, and its `Config` carries `region` rather tha
 ## Tools
 
 Tool calls round-trip through `Tool` (what you expose to the model) and `ToolCall`/`Msg.toolResult`
-(what the model asks for and what you feed back), independent of any provider's wire format:
+(what the model asks for and what you feed back), independent of any provider's wire format. The
+`Json` they carry is `lean-json`'s, re-exported by `import LLMClient`, so there's nothing extra to
+import:
 
 ```lean
-open Lean (Json)
-
 def getWeather : Tool :=
   { name := "get_weather"
     description := "Get the current weather for a city"

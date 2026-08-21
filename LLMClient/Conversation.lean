@@ -4,13 +4,11 @@
 module
 
 public import LLMClient.Provider
-public import Lean.Data.Json
+public import Json
 
 public section
 
 namespace LLMClient
-
-open Lean (Json)
 
 /-- Reported by `converseLoop` before each step of a multi-turn tool-calling exchange, so a
 caller can show live status without instrumenting `runTool` itself. -/

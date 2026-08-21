@@ -3,13 +3,11 @@
 
 module
 
-public import Lean.Data.Json
+public import Json
 
 public section
 
 namespace LLMClient
-
-open Lean (Json)
 
 /-- A tool exposed to the model. Each provider wraps `schema` in its own request shape
 (Anthropic's `input_schema`, OpenAI's `parameters`, ...). -/

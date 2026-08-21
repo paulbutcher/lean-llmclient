@@ -3,8 +3,7 @@
 
 module
 
-public import Lean.Data.Json
-import Lean.Data.Json.Parser
+public import Json
 import Leancurl
 import Std.Time
 public import Aws
@@ -14,7 +13,6 @@ public section
 
 namespace LLMClient.Bedrock
 
-open Lean (Json)
 open Leancurl
 
 /-- Bedrock does not reuse `LLMClient.Config`: the endpoint is wholly determined by the region,
@@ -102,7 +100,7 @@ sent empty: Converse rejects a `tools` array of length zero. -/
     (tools : Array LLMClient.Tool := #[]) : Json :=
   let fields : List (String × Json) :=
     [ ("messages", Json.arr (history.map msgJson)),
-      ("inferenceConfig", Json.mkObj [("maxTokens", config.maxOutputTokens)]) ]
+      ("inferenceConfig", Json.mkObj [("maxTokens", Json.ofNat config.maxOutputTokens)]) ]
   let withSystem := match config.systemPrompt with
     | some s => fields ++ [("system", Json.arr #[Json.mkObj [("text", s)]])]
     | none => fields

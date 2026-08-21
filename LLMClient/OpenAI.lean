@@ -3,8 +3,7 @@
 
 module
 
-public import Lean.Data.Json
-import Lean.Data.Json.Parser
+public import Json
 import Leancurl
 public import LLMClient.Provider
 
@@ -12,7 +11,6 @@ public section
 
 namespace LLMClient.OpenAI
 
-open Lean (Json)
 open Leancurl
 
 def defaultConfig : LLMClient.Config :=
@@ -88,7 +86,7 @@ def requestBody (config : LLMClient.Config) (history : Array LLMClient.Msg)
     | none => #[]
   Json.mkObj
     [ ("model", config.model),
-      ("max_completion_tokens", config.maxOutputTokens),
+      ("max_completion_tokens", Json.ofNat config.maxOutputTokens),
       ("tools", Json.arr (tools.map toolJson)),
       ("messages", Json.arr (developerMsg ++ history.map msgJson)) ]
 
