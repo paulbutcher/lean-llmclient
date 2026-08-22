@@ -19,6 +19,13 @@ def defaultConfig : LLMClient.Config :=
 def toolJson (t : LLMClient.Tool) : Json :=
   Json.mkObj [("name", t.name), ("description", t.description), ("input_schema", t.schema)]
 
+/-- One `tool_result` block, as it appears in the content of the user message answering a request
+for tools. -/
+def toolResultJson (id output : String) : Json :=
+  Json.mkObj [("type", "tool_result"), ("tool_use_id", id), ("content", output)]
+
+/-- A lone `.toolResult` becomes a message of its own here, which is right only when it is the one
+result outstanding. `messagesJson` is what a request is built from, and it groups. -/
 def msgJson : LLMClient.Msg → Json
   | .user text => Json.mkObj [("role", "user"), ("content", text)]
   | .assistant text toolCalls =>
@@ -27,10 +34,25 @@ def msgJson : LLMClient.Msg → Json
       Json.mkObj [("type", "tool_use"), ("id", tc.id), ("name", tc.name), ("input", tc.input)]
     Json.mkObj [("role", "assistant"), ("content", Json.arr (textBlock ++ toolBlocks))]
   | .toolResult id output =>
-    Json.mkObj
-      [ ("role", "user"),
-        ("content", Json.arr
-          #[Json.mkObj [("type", "tool_result"), ("tool_use_id", id), ("content", output)]]) ]
+    Json.mkObj [("role", "user"), ("content", Json.arr #[toolResultJson id output])]
+
+/-- The conversation as the Messages API wants it, which is not one message per `Msg`.
+
+An assistant turn that asks for several tools is answered by a *single* user message carrying one
+`tool_result` block per call, and roles have to alternate. A message per result breaks both, and
+the API rejects it rather than reading the results in sequence.
+
+So a run of consecutive `.toolResult`s becomes one message. Everything else maps as it reads. -/
+def messagesJson (history : Array LLMClient.Msg) : Array Json :=
+  let close (pending acc : Array Json) : Array Json :=
+    if pending.isEmpty then acc
+    else acc.push (Json.mkObj [("role", "user"), ("content", Json.arr pending)])
+  let (acc, pending) := history.foldl (init := ((#[] : Array Json), (#[] : Array Json)))
+    fun (acc, pending) msg =>
+      match msg with
+      | .toolResult id output => (acc, pending.push (toolResultJson id output))
+      | other => ((close pending acc).push (msgJson other), #[])
+  close pending acc
 
 def blockType (b : Json) : String :=
   match b.getObjVal? "type" >>= Json.getStr? with
@@ -78,7 +100,7 @@ def requestBody (config : LLMClient.Config) (history : Array LLMClient.Msg)
     [ ("model", config.model),
       ("max_tokens", Json.ofNat config.maxOutputTokens),
       ("tools", Json.arr (tools.map toolJson)),
-      ("messages", Json.arr (history.map msgJson)) ]
+      ("messages", Json.arr (messagesJson history)) ]
   Json.mkObj (match config.systemPrompt with
     | some s => fields ++ [("system", Json.str s)]
     | none => fields)

@@ -372,8 +372,7 @@ def testConverseLoop (r : Results) : IO Results := do
   let r := r.check "converseLoop: provider/runTool are each called exactly maxIterations times"
     (runToolAlwaysCalled == maxIters)
 
-  -- provider.sendRequest failing outright is the one remaining .error case: nothing new has
-  -- happened yet, so there's nothing to preserve.
+  -- provider.sendRequest failing outright is the one remaining .error case.
   let providerError : LLMClient.Provider :=
     { name := "fake"
       sendRequest := fun _ _ => pure (.error "boom") }
@@ -381,10 +380,92 @@ def testConverseLoop (r : Results) : IO Results := do
     LLMClient.converseLoop providerError #[] runToolUnused #[LLMClient.Msg.user "hi"]
   let r := r.check "converseLoop: a provider error still propagates as .error"
     (match resultError with
-      | .error e => e == "boom"
+      | .error e => e.message == "boom"
+      | .ok _ => false)
+  let r := r.check "converseLoop: a failure on the first request carries the history unchanged"
+    (match resultError with
+      | .error e => e.history == #[LLMClient.Msg.user "hi"]
+      | .ok _ => false)
+
+  -- Failing on the round trip *after* tools have run is what the history is carried for: those
+  -- calls have already changed whatever they change, and a caller that persists conversations has
+  -- to be able to record that rather than lose it along with the error.
+  let lateCount ← IO.mkRef (0 : Nat)
+  let providerLateError : LLMClient.Provider :=
+    { name := "fake"
+      sendRequest := fun _ _ => do
+        let n ← lateCount.get
+        lateCount.set (n + 1)
+        if n == 0 then pure (.ok ({ text := "", toolCalls := #[toolCall] } : LLMClient.Reply))
+        else pure (.error "the connection dropped") }
+  let resultLate ←
+    LLMClient.converseLoop providerLateError #[] (fun _ _ => pure "15°C, cloudy")
+      #[LLMClient.Msg.user "weather?"]
+  let r := r.check "converseLoop: a failure after tools ran keeps the call and its result"
+    (match resultLate with
+      | .error e =>
+        e.history ==
+          #[ LLMClient.Msg.user "weather?",
+             LLMClient.Msg.assistant "" #[toolCall],
+             LLMClient.Msg.toolResult "call_1" "15°C, cloudy" ]
       | .ok _ => false)
 
   return r
+
+/-- A turn that called two tools: one assistant message asking for both, then a result each. Both
+the Converse and Messages APIs answer that with a *single* user message carrying both blocks, and
+reject a message per result. -/
+def twoCallHistory : Array LLMClient.Msg :=
+  #[ .user "delete them",
+     .assistant ""
+       #[ { id := "call_1", name := "delete_todo", input := Json.mkObj [("id", Json.ofNat 1)] },
+          { id := "call_2", name := "delete_todo", input := Json.mkObj [("id", Json.ofNat 2)] } ],
+     .toolResult "call_1" "deleted 1",
+     .toolResult "call_2" "deleted 2" ]
+
+def roles (messages : Array Json) : Array String :=
+  messages.map fun m => (m.getObjVal? "role" >>= Json.getStr?).toOption.getD ""
+
+def testToolResultBatching (r : Results) : Results :=
+  let bedrock := LLMClient.Bedrock.messagesJson twoCallHistory
+  let claude := LLMClient.Claude.messagesJson twoCallHistory
+  r
+    |>.check "bedrock: two results become one message, not two"
+      (bedrock.size == 3)
+    |>.check "bedrock: that message carries a block per outstanding call"
+      (bedrock.getD 2 Json.null ==
+        Json.mkObj
+          [ ("role", "user"),
+            ("content", Json.arr
+              #[ LLMClient.Bedrock.toolResultJson "call_1" "deleted 1",
+                 LLMClient.Bedrock.toolResultJson "call_2" "deleted 2" ]) ])
+    |>.check "bedrock: roles alternate, the other thing a message per result breaks"
+      (roles bedrock == #["user", "assistant", "user"])
+    |>.check "claude: two results become one message, not two"
+      (claude.size == 3)
+    |>.check "claude: that message carries a block per outstanding call"
+      (claude.getD 2 Json.null ==
+        Json.mkObj
+          [ ("role", "user"),
+            ("content", Json.arr
+              #[ LLMClient.Claude.toolResultJson "call_1" "deleted 1",
+                 LLMClient.Claude.toolResultJson "call_2" "deleted 2" ]) ])
+    |>.check "claude: roles alternate"
+      (roles claude == #["user", "assistant", "user"])
+    |>.check "bedrock: a lone result is still a message of its own"
+      (LLMClient.Bedrock.messagesJson #[.toolResult "call_1" "x"] ==
+        #[LLMClient.Bedrock.msgJson (.toolResult "call_1" "x")])
+    |>.check "claude: a lone result is still a message of its own"
+      (LLMClient.Claude.messagesJson #[.toolResult "call_1" "x"] ==
+        #[LLMClient.Claude.msgJson (.toolResult "call_1" "x")])
+    |>.check "bedrock: a history with no results is mapped straight through"
+      (LLMClient.Bedrock.messagesJson sampleHistory == sampleHistory.map LLMClient.Bedrock.msgJson)
+    |>.check "claude: a history with no results is mapped straight through"
+      (LLMClient.Claude.messagesJson sampleHistory == sampleHistory.map LLMClient.Claude.msgJson)
+    -- OpenAI wants the opposite, a `role: "tool"` message per call, which is what it already
+    -- does; it is deliberately left ungrouped.
+    |>.check "openai: a result per call remains a message per call"
+      ((twoCallHistory.map LLMClient.OpenAI.msgJson).size == twoCallHistory.size)
 
 def testBedrock (r : Results) : Results :=
   open LLMClient.Bedrock in
@@ -502,6 +583,7 @@ def runAll : IO Results := do
   let r := testClaudeSystemPrompt r
   let r := testBedrock r
   let r := testBedrockRequestBody r
+  let r := testToolResultBatching r
   testConverseLoop r
 
 def main : IO UInt32 := do

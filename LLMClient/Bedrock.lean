@@ -43,8 +43,18 @@ def path (config : Config) : String := s!"/model/{config.model}/converse"
     [ ("toolUse", Json.mkObj
         [ ("toolUseId", tc.id), ("name", tc.name), ("input", tc.input) ]) ]
 
+/-- One `toolResult` block, as it appears in the content of the user message answering a request
+for tools. -/
+@[expose] def toolResultJson (id output : String) : Json :=
+  Json.mkObj
+    [ ("toolResult", Json.mkObj
+        [ ("toolUseId", id), ("content", Json.arr #[Json.mkObj [("text", output)]]) ]) ]
+
 /-- Converse blocks carry no discriminating `type` field the way Anthropic's do; a block is a
-one-key object and the key is what it is. -/
+one-key object and the key is what it is.
+
+A lone `.toolResult` becomes a message of its own here, which is right only when it is the one
+result outstanding. `messagesJson` is what a request is built from, and it groups. -/
 @[expose] def msgJson : LLMClient.Msg → Json
   | .user text =>
     Json.mkObj [("role", "user"), ("content", Json.arr #[Json.mkObj [("text", text)]])]
@@ -53,13 +63,26 @@ one-key object and the key is what it is. -/
     let toolBlocks := toolCalls.map toolCallJson
     Json.mkObj [("role", "assistant"), ("content", Json.arr (textBlock ++ toolBlocks))]
   | .toolResult id output =>
-    Json.mkObj
-      [ ("role", "user"),
-        ("content", Json.arr
-          #[Json.mkObj
-            [ ("toolResult", Json.mkObj
-                [ ("toolUseId", id),
-                  ("content", Json.arr #[Json.mkObj [("text", output)]]) ]) ]]) ]
+    Json.mkObj [("role", "user"), ("content", Json.arr #[toolResultJson id output])]
+
+/-- The conversation as Converse wants it, which is not one message per `Msg`.
+
+An assistant turn that asks for several tools is answered by a *single* user message carrying one
+`toolResult` block per call. A message each is rejected: Converse looks for every outstanding id
+in the one message following the request and reports whichever are not there as missing. It also
+requires roles to alternate, which a run of one-result messages breaks by itself.
+
+So a run of consecutive `.toolResult`s becomes one message. Everything else maps as it reads. -/
+@[expose] def messagesJson (history : Array LLMClient.Msg) : Array Json :=
+  let close (pending acc : Array Json) : Array Json :=
+    if pending.isEmpty then acc
+    else acc.push (Json.mkObj [("role", "user"), ("content", Json.arr pending)])
+  let (acc, pending) := history.foldl (init := ((#[] : Array Json), (#[] : Array Json)))
+    fun (acc, pending) msg =>
+      match msg with
+      | .toolResult id output => (acc, pending.push (toolResultJson id output))
+      | other => ((close pending acc).push (msgJson other), #[])
+  close pending acc
 
 @[expose] def contentOf (resp : Json) : Array Json :=
   match resp.getObjVal? "output" >>= (·.getObjVal? "message") >>= (·.getObjVal? "content")
@@ -99,7 +122,7 @@ sent empty: Converse rejects a `tools` array of length zero. -/
 @[expose] def requestBody (config : Config) (history : Array LLMClient.Msg)
     (tools : Array LLMClient.Tool := #[]) : Json :=
   let fields : List (String × Json) :=
-    [ ("messages", Json.arr (history.map msgJson)),
+    [ ("messages", Json.arr (messagesJson history)),
       ("inferenceConfig", Json.mkObj [("maxTokens", Json.ofNat config.maxOutputTokens)]) ]
   let withSystem := match config.systemPrompt with
     | some s => fields ++ [("system", Json.arr #[Json.mkObj [("text", s)]])]
