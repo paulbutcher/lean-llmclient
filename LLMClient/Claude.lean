@@ -20,9 +20,12 @@ def toolJson (t : LLMClient.Tool) : Json :=
   Json.mkObj [("name", t.name), ("description", t.description), ("input_schema", t.schema)]
 
 /-- One `tool_result` block, as it appears in the content of the user message answering a request
-for tools. -/
-def toolResultJson (id output : String) : Json :=
-  Json.mkObj [("type", "tool_result"), ("tool_use_id", id), ("content", output)]
+for tools. `is_error` is omitted rather than sent as `false`, in the same way as the system
+prompt. -/
+def toolResultJson (id output : String) (isError : Bool := false) : Json :=
+  let fields : List (String × Json) :=
+    [("type", "tool_result"), ("tool_use_id", id), ("content", output)]
+  Json.mkObj (if isError then fields ++ [("is_error", Json.bool true)] else fields)
 
 /-- A lone `.toolResult` becomes a message of its own here, which is right only when it is the one
 result outstanding. `messagesJson` is what a request is built from, and it groups. -/
@@ -33,8 +36,8 @@ def msgJson : LLMClient.Msg → Json
     let toolBlocks := toolCalls.map fun tc =>
       Json.mkObj [("type", "tool_use"), ("id", tc.id), ("name", tc.name), ("input", tc.input)]
     Json.mkObj [("role", "assistant"), ("content", Json.arr (textBlock ++ toolBlocks))]
-  | .toolResult id output =>
-    Json.mkObj [("role", "user"), ("content", Json.arr #[toolResultJson id output])]
+  | .toolResult id output isError =>
+    Json.mkObj [("role", "user"), ("content", Json.arr #[toolResultJson id output isError])]
 
 /-- The conversation as the Messages API wants it, which is not one message per `Msg`.
 
@@ -50,7 +53,7 @@ def messagesJson (history : Array LLMClient.Msg) : Array Json :=
   let (acc, pending) := history.foldl (init := ((#[] : Array Json), (#[] : Array Json)))
     fun (acc, pending) msg =>
       match msg with
-      | .toolResult id output => (acc, pending.push (toolResultJson id output))
+      | .toolResult id output isError => (acc, pending.push (toolResultJson id output isError))
       | other => ((close pending acc).push (msgJson other), #[])
   close pending acc
 

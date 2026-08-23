@@ -44,11 +44,14 @@ def path (config : Config) : String := s!"/model/{config.model}/converse"
         [ ("toolUseId", tc.id), ("name", tc.name), ("input", tc.input) ]) ]
 
 /-- One `toolResult` block, as it appears in the content of the user message answering a request
-for tools. -/
-@[expose] def toolResultJson (id output : String) : Json :=
+for tools. `status` is omitted rather than sent as `"success"`, in the same way as the system
+prompt. -/
+@[expose] def toolResultJson (id output : String) (isError : Bool := false) : Json :=
+  let fields : List (String × Json) :=
+    [ ("toolUseId", id), ("content", Json.arr #[Json.mkObj [("text", output)]]) ]
   Json.mkObj
-    [ ("toolResult", Json.mkObj
-        [ ("toolUseId", id), ("content", Json.arr #[Json.mkObj [("text", output)]]) ]) ]
+    [ ("toolResult",
+        Json.mkObj (if isError then fields ++ [("status", Json.str "error")] else fields)) ]
 
 /-- Converse blocks carry no discriminating `type` field the way Anthropic's do; a block is a
 one-key object and the key is what it is.
@@ -62,8 +65,8 @@ result outstanding. `messagesJson` is what a request is built from, and it group
     let textBlock := if text.isEmpty then #[] else #[Json.mkObj [("text", text)]]
     let toolBlocks := toolCalls.map toolCallJson
     Json.mkObj [("role", "assistant"), ("content", Json.arr (textBlock ++ toolBlocks))]
-  | .toolResult id output =>
-    Json.mkObj [("role", "user"), ("content", Json.arr #[toolResultJson id output])]
+  | .toolResult id output isError =>
+    Json.mkObj [("role", "user"), ("content", Json.arr #[toolResultJson id output isError])]
 
 /-- The conversation as Converse wants it, which is not one message per `Msg`.
 
@@ -80,7 +83,7 @@ So a run of consecutive `.toolResult`s becomes one message. Everything else maps
   let (acc, pending) := history.foldl (init := ((#[] : Array Json), (#[] : Array Json)))
     fun (acc, pending) msg =>
       match msg with
-      | .toolResult id output => (acc, pending.push (toolResultJson id output))
+      | .toolResult id output isError => (acc, pending.push (toolResultJson id output isError))
       | other => ((close pending acc).push (msgJson other), #[])
   close pending acc
 

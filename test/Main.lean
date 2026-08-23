@@ -231,38 +231,45 @@ def testClaudeSystemPrompt (r : Results) : Results :=
     |>.check "requestBody with systemPrompt leaves messages untouched"
       ((bodySome.getObjVal? "messages").toOption == (bodyNone.getObjVal? "messages").toOption)
 
+/-- `sampleTool` with an implementation behind it, which is the pairing `converseLoop` takes. -/
+def sampleToolImpl (run : Json → IO (Except String String)) : LLMClient.ToolImpl :=
+  { tool := sampleTool, run }
+
+def mentions (haystack needle : String) : Bool := (haystack.splitOn needle).length > 1
+
 def testConverseLoop (r : Results) : IO Results := do
   -- No config is passed here, so the default `LoopConfig` (including its no-op `onProgress`)
   -- is exercised too.
   let provider1 : LLMClient.Provider :=
     { name := "fake"
       sendRequest := fun _ _ => pure (.ok ({ text := "hello", toolCalls := #[] } : LLMClient.Reply)) }
-  let runToolUnused : String → Json → IO String := fun _ _ => pure "should not be called"
-  let result1 ← LLMClient.converseLoop provider1 #[] runToolUnused #[LLMClient.Msg.user "hi"]
+  let result1 ← LLMClient.converseLoop provider1 #[] #[LLMClient.Msg.user "hi"]
   let r := r.check "converseLoop: no tool calls returns immediately (default LoopConfig)"
     (match result1 with
       | .ok (h, t) => h == #[LLMClient.Msg.user "hi", LLMClient.Msg.assistant "hello" #[]] && t == "hello"
       | .error _ => false)
 
   let callCount ← IO.mkRef (0 : Nat)
+  let toolsOffered ← IO.mkRef (#[] : Array LLMClient.Tool)
   let toolCall : LLMClient.ToolCall :=
     { id := "call_1", name := "get_weather", input := Json.mkObj [("city", "Paris")] }
   let provider2 : LLMClient.Provider :=
     { name := "fake"
-      sendRequest := fun _ _ => do
+      sendRequest := fun _ tools => do
+        toolsOffered.set tools
         let n ← callCount.get
         callCount.set (n + 1)
         if n == 0 then
           pure (.ok ({ text := "", toolCalls := #[toolCall] } : LLMClient.Reply))
         else
           pure (.ok ({ text := "final answer", toolCalls := #[] } : LLMClient.Reply)) }
-  let toolCallsSeen ← IO.mkRef (#[] : Array (String × Json))
-  let runTool2 : String → Json → IO String := fun name input => do
-    toolCallsSeen.modify (·.push (name, input))
-    pure "15°C, cloudy"
+  let inputsSeen ← IO.mkRef (#[] : Array Json)
+  let tools2 := #[sampleToolImpl fun input => do
+    inputsSeen.modify (·.push input)
+    pure (.ok "15°C, cloudy")]
   let progressLog ← IO.mkRef (#[] : Array LLMClient.Progress)
   let config2 : LLMClient.LoopConfig := { onProgress := fun p => progressLog.modify (·.push p) }
-  let result2 ← LLMClient.converseLoop provider2 #[] runTool2 #[LLMClient.Msg.user "weather?"] config2
+  let result2 ← LLMClient.converseLoop provider2 tools2 #[LLMClient.Msg.user "weather?"] config2
   let expectedHistory2 : Array LLMClient.Msg :=
     #[ LLMClient.Msg.user "weather?",
        LLMClient.Msg.assistant "" #[toolCall],
@@ -272,42 +279,103 @@ def testConverseLoop (r : Results) : IO Results := do
     (match result2 with
       | .ok (h, t) => h == expectedHistory2 && t == "final answer"
       | .error _ => false)
-  let toolCallsSeen ← toolCallsSeen.get
-  let r := r.check "converseLoop: runTool is invoked with the model's requested name/input"
-    (toolCallsSeen == #[("get_weather", Json.mkObj [("city", "Paris")])])
+  let toolsOffered ← toolsOffered.get
+  let r := r.check "converseLoop: the provider is offered the tool of each ToolImpl"
+    (toolsOffered.map (·.name) == #["get_weather"])
+  let inputsSeen ← inputsSeen.get
+  let r := r.check "converseLoop: the matching implementation runs, with the model's input"
+    (inputsSeen == #[Json.mkObj [("city", "Paris")]])
   let progressSeen ← progressLog.get
   let r := r.check "converseLoop: onProgress fires thinking, runningTool, thinking"
     (match progressSeen.toList with
       | [LLMClient.Progress.thinking, LLMClient.Progress.runningTool "get_weather", LLMClient.Progress.thinking] => true
       | _ => false)
 
+  -- A name with no implementation behind it can only come from the model inventing one, so the
+  -- loop answers it itself rather than handing the caller a call it cannot serve.
+  let unknownCount ← IO.mkRef (0 : Nat)
+  let unknownCall : LLMClient.ToolCall := { id := "call_x", name := "no_such_tool" }
+  let providerUnknown : LLMClient.Provider :=
+    { name := "fake"
+      sendRequest := fun _ _ => do
+        let n ← unknownCount.get
+        unknownCount.set (n + 1)
+        if n == 0 then pure (.ok ({ toolCalls := #[unknownCall] } : LLMClient.Reply))
+        else pure (.ok ({ text := "my mistake" } : LLMClient.Reply)) }
+  let realToolRan ← IO.mkRef false
+  let resultUnknown ←
+    LLMClient.converseLoop providerUnknown
+      #[sampleToolImpl fun _ => realToolRan.set true *> pure (.ok "unused")]
+      #[LLMClient.Msg.user "hi"]
+  let r := r.check "converseLoop: an unknown tool name does not stop the loop"
+    (match resultUnknown with
+      | .ok (_, t) => t == "my mistake"
+      | .error _ => false)
+  let r := r.check "converseLoop: an unknown tool name yields an error result naming the tool"
+    (match resultUnknown with
+      | .ok (h, _) =>
+        match h.getD 2 (LLMClient.Msg.user "") with
+        | .toolResult id output isError => id == "call_x" && isError && mentions output "no_such_tool"
+        | _ => false
+      | .error _ => false)
+  let realToolRan ← realToolRan.get
+  let r := r.check "converseLoop: an unknown tool name runs none of the tools that do exist" (!realToolRan)
+
+  -- A tool that fails reaches the model as a result flagged as an error, rather than as prose it
+  -- has to read the failure out of.
+  let failingCount ← IO.mkRef (0 : Nat)
+  let providerFailingTool : LLMClient.Provider :=
+    { name := "fake"
+      sendRequest := fun _ _ => do
+        let n ← failingCount.get
+        failingCount.set (n + 1)
+        if n == 0 then pure (.ok ({ toolCalls := #[toolCall] } : LLMClient.Reply))
+        else pure (.ok ({ text := "I couldn't find out" } : LLMClient.Reply)) }
+  let resultFailing ←
+    LLMClient.converseLoop providerFailingTool
+      #[sampleToolImpl fun _ => pure (.error "the weather service is down")]
+      #[LLMClient.Msg.user "weather?"]
+  let r := r.check "converseLoop: a tool returning .error becomes a flagged result carrying its text"
+    (match resultFailing with
+      | .ok (h, _) =>
+        h.getD 2 (LLMClient.Msg.user "") ==
+          LLMClient.Msg.toolResult "call_1" "the weather service is down" true
+      | .error _ => false)
+  let r := r.check "converseLoop: a failing tool does not stop the loop"
+    (match resultFailing with
+      | .ok (_, t) => t == "I couldn't find out"
+      | .error _ => false)
+
   let refusalToolCalled ← IO.mkRef false
   let providerRefusal : LLMClient.Provider :=
     { name := "fake"
       sendRequest := fun _ _ =>
         pure (.ok ({ text := "", toolCalls := #[], isRefusal := true } : LLMClient.Reply)) }
-  let runToolRefusal : String → Json → IO String := fun _ _ => refusalToolCalled.set true *> pure "unused"
-  let resultRefusal ← LLMClient.converseLoop providerRefusal #[] runToolRefusal #[LLMClient.Msg.user "hi"]
+  let toolsNeverRun := #[sampleToolImpl fun _ => refusalToolCalled.set true *> pure (.ok "unused")]
+  let resultRefusal ←
+    LLMClient.converseLoop providerRefusal toolsNeverRun #[LLMClient.Msg.user "hi"]
   let r := r.check "converseLoop: isRefusal stops with the fixed decline message"
     (match resultRefusal with
       | .ok (_, t) => t == "The model declined to respond to that."
       | .error _ => false)
   let refusalToolCalled ← refusalToolCalled.get
-  let r := r.check "converseLoop: isRefusal does not invoke runTool" (!refusalToolCalled)
+  let r := r.check "converseLoop: isRefusal runs no tool" (!refusalToolCalled)
 
   let truncatedToolCalled ← IO.mkRef false
   let providerTruncated : LLMClient.Provider :=
     { name := "fake"
       sendRequest := fun _ _ =>
         pure (.ok ({ text := "", toolCalls := #[], isTruncated := true } : LLMClient.Reply)) }
-  let runToolTruncated : String → Json → IO String := fun _ _ => truncatedToolCalled.set true *> pure "unused"
-  let resultTruncated ← LLMClient.converseLoop providerTruncated #[] runToolTruncated #[LLMClient.Msg.user "hi"]
+  let resultTruncated ←
+    LLMClient.converseLoop providerTruncated
+      #[sampleToolImpl fun _ => truncatedToolCalled.set true *> pure (.ok "unused")]
+      #[LLMClient.Msg.user "hi"]
   let r := r.check "converseLoop: isTruncated stops with the fixed cut-off message"
     (match resultTruncated with
       | .ok (_, t) => t == "The model's reply was cut off before it finished; try again."
       | .error _ => false)
   let truncatedToolCalled ← truncatedToolCalled.get
-  let r := r.check "converseLoop: isTruncated does not invoke runTool" (!truncatedToolCalled)
+  let r := r.check "converseLoop: isTruncated runs no tool" (!truncatedToolCalled)
 
   -- maxIterations := 0 gives up before ever calling the provider, so there's no history to
   -- preserve; this is the one exhaustion shape that still stops immediately.
@@ -318,7 +386,7 @@ def testConverseLoop (r : Results) : IO Results := do
         exhaustedProviderCalled.set true *>
           pure (.ok ({ text := "hello", toolCalls := #[] } : LLMClient.Reply)) }
   let resultExhausted ←
-    LLMClient.converseLoop providerExhausted #[] runToolUnused #[LLMClient.Msg.user "hi"]
+    LLMClient.converseLoop providerExhausted #[] #[LLMClient.Msg.user "hi"]
       ({ maxIterations := 0 } : LLMClient.LoopConfig)
   let giveUpText := "The model kept calling tools without finishing; giving up."
   let r := r.check "converseLoop: maxIterations := 0 gives up as .ok with the giving-up message"
@@ -339,11 +407,11 @@ def testConverseLoop (r : Results) : IO Results := do
         let tc : LLMClient.ToolCall := { id := s!"call_{n}", name := "get_weather", input := Json.mkObj [("city", "Paris")] }
         pure (.ok ({ text := "", toolCalls := #[tc] } : LLMClient.Reply)) }
   let runToolAlwaysCalled ← IO.mkRef (0 : Nat)
-  let runToolAlways : String → Json → IO String := fun _ _ =>
-    runToolAlwaysCalled.modify (· + 1) *> pure "15°C, cloudy"
+  let toolsAlways := #[sampleToolImpl fun _ =>
+    runToolAlwaysCalled.modify (· + 1) *> pure (.ok "15°C, cloudy")]
   let maxIters := 2
   let resultBudget ←
-    LLMClient.converseLoop providerAlwaysToolCall #[] runToolAlways #[LLMClient.Msg.user "weather?"]
+    LLMClient.converseLoop providerAlwaysToolCall toolsAlways #[LLMClient.Msg.user "weather?"]
       ({ maxIterations := maxIters } : LLMClient.LoopConfig)
   let firstToolCall : LLMClient.ToolCall := { id := "call_0", name := "get_weather", input := Json.mkObj [("city", "Paris")] }
   let r := r.check "converseLoop: exhausting a real tool-call budget returns .ok"
@@ -369,15 +437,14 @@ def testConverseLoop (r : Results) : IO Results := do
       | .ok (_, t) => t == giveUpText
       | .error _ => false)
   let runToolAlwaysCalled ← runToolAlwaysCalled.get
-  let r := r.check "converseLoop: provider/runTool are each called exactly maxIterations times"
+  let r := r.check "converseLoop: provider/tool are each called exactly maxIterations times"
     (runToolAlwaysCalled == maxIters)
 
   -- provider.sendRequest failing outright is the one remaining .error case.
   let providerError : LLMClient.Provider :=
     { name := "fake"
       sendRequest := fun _ _ => pure (.error "boom") }
-  let resultError ←
-    LLMClient.converseLoop providerError #[] runToolUnused #[LLMClient.Msg.user "hi"]
+  let resultError ← LLMClient.converseLoop providerError #[] #[LLMClient.Msg.user "hi"]
   let r := r.check "converseLoop: a provider error still propagates as .error"
     (match resultError with
       | .error e => e.message == "boom"
@@ -399,7 +466,7 @@ def testConverseLoop (r : Results) : IO Results := do
         if n == 0 then pure (.ok ({ text := "", toolCalls := #[toolCall] } : LLMClient.Reply))
         else pure (.error "the connection dropped") }
   let resultLate ←
-    LLMClient.converseLoop providerLateError #[] (fun _ _ => pure "15°C, cloudy")
+    LLMClient.converseLoop providerLateError #[sampleToolImpl fun _ => pure (.ok "15°C, cloudy")]
       #[LLMClient.Msg.user "weather?"]
   let r := r.check "converseLoop: a failure after tools ran keeps the call and its result"
     (match resultLate with
@@ -466,6 +533,52 @@ def testToolResultBatching (r : Results) : Results :=
     -- does; it is deliberately left ungrouped.
     |>.check "openai: a result per call remains a message per call"
       ((twoCallHistory.map LLMClient.OpenAI.msgJson).size == twoCallHistory.size)
+
+/-- A result flagged as an error has to reach each API in the field that API reads it from;
+`Theorems.lean` proves the key is present exactly when the flag is, and these pin down which key
+and what it holds. -/
+def testToolResultError (r : Results) : Results :=
+  let failed : LLMClient.Msg := .toolResult "call_1" "the weather service is down" true
+  let succeeded : LLMClient.Msg := .toolResult "call_2" "15°C, cloudy"
+  r
+    |>.check "claude: a failed result sets is_error inside the tool_result block"
+      (LLMClient.Claude.msgJson failed ==
+        Json.mkObj
+          [ ("role", "user"),
+            ("content", Json.arr
+              #[Json.mkObj
+                  [ ("type", "tool_result"), ("tool_use_id", "call_1"),
+                    ("content", "the weather service is down"), ("is_error", Json.bool true) ]]) ])
+    |>.check "bedrock: a failed result sets status inside the toolResult object"
+      (LLMClient.Bedrock.msgJson failed ==
+        Json.mkObj
+          [ ("role", "user"),
+            ("content", Json.arr
+              #[Json.mkObj
+                  [ ("toolResult", Json.mkObj
+                      [ ("toolUseId", "call_1"),
+                        ("content", Json.arr
+                          #[Json.mkObj [("text", "the weather service is down")]]),
+                        ("status", "error") ]) ]]) ])
+    -- Chat Completions tool messages have no field for it, so the flag is dropped and the
+    -- failure reaches the model only through the output text.
+    |>.check "openai: a failed result encodes exactly as a successful one"
+      (LLMClient.OpenAI.msgJson failed ==
+        LLMClient.OpenAI.msgJson (.toolResult "call_1" "the weather service is down"))
+    |>.check "claude: grouping a run of results keeps each block's own flag"
+      (LLMClient.Claude.messagesJson #[failed, succeeded] ==
+        #[Json.mkObj
+            [ ("role", "user"),
+              ("content", Json.arr
+                #[ LLMClient.Claude.toolResultJson "call_1" "the weather service is down" true,
+                   LLMClient.Claude.toolResultJson "call_2" "15°C, cloudy" ]) ]])
+    |>.check "bedrock: grouping a run of results keeps each block's own flag"
+      (LLMClient.Bedrock.messagesJson #[failed, succeeded] ==
+        #[Json.mkObj
+            [ ("role", "user"),
+              ("content", Json.arr
+                #[ LLMClient.Bedrock.toolResultJson "call_1" "the weather service is down" true,
+                   LLMClient.Bedrock.toolResultJson "call_2" "15°C, cloudy" ]) ]])
 
 def testBedrock (r : Results) : Results :=
   open LLMClient.Bedrock in
@@ -584,6 +697,7 @@ def runAll : IO Results := do
   let r := testBedrock r
   let r := testBedrockRequestBody r
   let r := testToolResultBatching r
+  let r := testToolResultError r
   testConverseLoop r
 
 def main : IO UInt32 := do

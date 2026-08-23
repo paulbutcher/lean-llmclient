@@ -1,5 +1,9 @@
 # Changelog
 
+## [0.8.0] - 2026-08-23
+
+Breaking changes to `converseLoop` and `Msg.toolResult` to improve structure and error reporting.
+
 ## [0.6.0] - 2026-08-21
 
 Switch to lean-json

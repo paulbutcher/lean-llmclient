@@ -16,6 +16,14 @@ structure Tool where
   description : String
   schema : Json
 
+/-- A tool paired with the code that runs it, so that anything advertised to a model has an
+implementation behind it by construction. `run` returns `.error` for a call that failed, which
+reaches the model as a tool result flagged as an error rather than as prose it has to read
+failure out of. -/
+structure ToolImpl where
+  tool : LLMClient.Tool
+  run : Json → IO (Except String String)
+
 /-- A tool call the model asked for. `input` is `{}` for tools that take no arguments. -/
 structure ToolCall where
   id : String
@@ -28,7 +36,7 @@ this and replay it on the next request. -/
 inductive Msg where
   | user (text : String)
   | assistant (text : String) (toolCalls : Array LLMClient.ToolCall := #[])
-  | toolResult (id : String) (output : String)
+  | toolResult (id : String) (output : String) (isError : Bool := false)
 deriving Inhabited, BEq
 
 /-- A provider's response, translated out of its own wire format. Named `Reply` (not

@@ -1,7 +1,7 @@
 # LLMClient
 
 A provider-agnostic Lean 4 client for LLM chat APIs. `LLMClient` defines a single
-request/response vocabulary (`Msg`, `Tool`, `ToolCall`, `Reply`, `Config`) and a `Provider`
+request/response vocabulary (`Msg`, `Tool`, `ToolImpl`, `ToolCall`, `Reply`, `Config`) and a `Provider`
 interface that drives one round trip against a backend; `LLMClient.OpenAI`, `LLMClient.Claude` and
 `LLMClient.Bedrock` implement that interface against the OpenAI Chat Completions, Anthropic
 Messages and Amazon Bedrock Converse APIs respectively. Callers write their conversation loop
@@ -24,7 +24,7 @@ compiles a small C shim against `libcurl`. Building anything that depends on `LL
 needs `pkg-config`, `libcurl` development headers, and a C compiler available (e.g. on Debian/
 Ubuntu, `pkg-config` and `libcurl4-openssl-dev`). It also depends on
 [`lean-json`](https://github.com/paulbutcher/lean-json) for the `Json` type that `Tool.schema`,
-`ToolCall.input` and `runTool` are written in, and on
+`ToolCall.input` and `ToolImpl.run` are written in, and on
 [`lean-aws`](https://github.com/paulbutcher/lean-aws) and, through it,
 [`leancrypto`](https://github.com/paulbutcher/leancrypto) for request signing; those three are
 pure Lean and add no build requirements of their own.
@@ -93,24 +93,26 @@ send the result of each tool call back to the model and keep going until it stop
 tools. `converseLoop` runs that exchange for you, in place of writing the loop yourself:
 
 ```lean
-def runTool (name : String) (input : Json) : IO String :=
-  if name == "get_weather" then
-    let city := (input.getObjVal? "city" >>= Json.getStr?).toOption.getD ""
-    pure s!"15°C, cloudy in {city}" -- however you actually look this up
-  else
-    pure s!"unknown tool: {name}"
+def getWeatherImpl : ToolImpl :=
+  { tool := getWeather
+    run := fun input =>
+      let city := (input.getObjVal? "city" >>= Json.getStr?).toOption.getD ""
+      if city.isEmpty then
+        pure (.error "no city was given")
+      else
+        pure (.ok s!"15°C, cloudy in {city}") } -- however you actually look this up
 
 let config : LoopConfig :=
   { onProgress := fun
       | .thinking => IO.println "model is thinking..."
       | .runningTool name => IO.println s!"running tool: {name}" }
 
-match ← converseLoop provider #[getWeather] runTool history config with
+match ← converseLoop provider #[getWeatherImpl] history config with
 | .error failure => IO.eprintln s!"request failed: {failure.message}"
 | .ok (_, text) => IO.println text
 ```
 
-`config` is optional; drop it (`converseLoop provider #[getWeather] runTool history`)
+`config` is optional; drop it (`converseLoop provider #[getWeatherImpl] history`)
 to get the defaults: `maxIterations := 5` and no progress reporting. `maxIterations` bounds how
 many tool round trips are allowed before `converseLoop` gives up, since a model can in principle
 keep asking for tools forever.

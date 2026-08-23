@@ -67,6 +67,13 @@ theorem claude_msgJson_role (m : Msg) :
   · exact Or.inr rfl
   · exact Or.inl rfl
 
+/-- The Messages API reads a failed tool result off `is_error`, and treats an absent one as a
+success, so the key has to be there exactly when the flag is set. -/
+theorem claude_toolResultJson_isError (id output : String) (isError : Bool) :
+    ((Claude.toolResultJson id output isError).getObjVal? "is_error").toOption.isSome =
+      isError := by
+  cases isError <;> rfl
+
 /-- Chat Completions rejects any role outside this triple, so no `Msg` may encode to another
 one. -/
 theorem openai_msgJson_role (m : Msg) :
@@ -151,6 +158,13 @@ theorem bedrock_msgJson_role (m : Msg) :
   · exact Or.inl rfl
   · exact Or.inr rfl
   · exact Or.inl rfl
+
+/-- Converse reads a failed tool result off `status`, and treats an absent one as a success, so
+the key has to be there exactly when the flag is set. -/
+theorem bedrock_toolResultJson_status (id output : String) (isError : Bool) :
+    ((Bedrock.toolResultJson id output isError).getObjVal? "toolResult"
+      >>= (·.getObjVal? "status")).toOption.isSome = isError := by
+  cases isError <;> rfl
 
 /-- Converse rejects a `toolConfig` carrying an empty `tools` array, so the key has to be absent
 rather than empty exactly when there are no tools. -/

@@ -37,15 +37,24 @@ structure LoopFailure where
   message : String
   history : Array Msg
 
-private def go (provider : Provider) (tools : Array Tool)
-    (runTool : String → Json → IO String) (onProgress : Progress → IO Unit)
+/-- A call naming a tool that isn't on offer is answered here rather than passed on, since there
+is nothing to pass it to. `.runningTool` is not reported for it, because nothing runs. -/
+private def runCall (tools : Array ToolImpl) (onProgress : Progress → IO Unit) (tc : ToolCall) :
+    IO (Except String String) :=
+  match tools.find? (·.tool.name == tc.name) with
+  | some impl => do
+    onProgress (.runningTool tc.name)
+    impl.run tc.input
+  | none => pure (.error s!"there is no tool called {tc.name}")
+
+private def go (provider : Provider) (tools : Array ToolImpl) (onProgress : Progress → IO Unit)
     (history : Array Msg) (iterationsLeft : Nat) :
     IO (Except LoopFailure (Array Msg × String)) := do
   if iterationsLeft == 0 then
     let text := "The model kept calling tools without finishing; giving up."
     return .ok (history.push (Msg.assistant text), text)
   onProgress .thinking
-  match ← provider.sendRequest history tools with
+  match ← provider.sendRequest history (tools.map (·.tool)) with
   | .error e => return .error { message := e, history }
   | .ok resp =>
     let history := history.push (Msg.assistant resp.text resp.toolCalls)
@@ -58,25 +67,33 @@ private def go (provider : Provider) (tools : Array Tool)
     else
       let mut history := history
       for tc in resp.toolCalls do
-        onProgress (.runningTool tc.name)
-        let output ← runTool tc.name tc.input
-        history := history.push (Msg.toolResult tc.id output)
-      go provider tools runTool onProgress history (iterationsLeft - 1)
+        let (output, isError) ← match ← runCall tools onProgress tc with
+          | .ok text => pure (text, false)
+          | .error text => pure (text, true)
+        history := history.push (Msg.toolResult tc.id output isError)
+      go provider tools onProgress history (iterationsLeft - 1)
 termination_by iterationsLeft
 decreasing_by simp_all; omega
 
 /-- Keeps sending until the model stops asking for tools, replies, refuses, its reply is
-truncated, or `config.maxIterations` is exhausted, whichever happens first. `runTool` executes
-one tool call by name; it's a parameter (rather than this module knowing how tools are
-implemented) so this loop's control flow stays independent of any particular tool set.
+truncated, or `config.maxIterations` is exhausted, whichever happens first.
+
+`tools` is what the model is offered and what answers it in one: the catalogue sent with each
+request is `tools.map (·.tool)`, and each call the model makes is dispatched to the `run` of the
+first entry whose `tool.name` matches, so duplicate names shadow later ones. A call naming a tool
+that is not there never reaches the caller: the loop records a `.toolResult` for it flagged as an
+error, saying the tool does not exist, and carries on.
+
+`ToolImpl.run` returning `.error` becomes a `.toolResult` flagged as an error too, with the error
+text as its output.
+
 `config.onProgress` fires before each request (`.thinking`) and before each tool call
 (`.runningTool name`). Every one of those outcomes, including exhausting `maxIterations`, is
 returned as `.ok (history, text)`, since real conversation happened and `history` is worth
 keeping; `.error` is `provider.sendRequest` itself failing, and carries the history too, for the
 reason `LoopFailure` gives. -/
-def converseLoop (provider : Provider) (tools : Array Tool)
-    (runTool : String → Json → IO String) (history : Array Msg) (config : LoopConfig := {}) :
-    IO (Except LoopFailure (Array Msg × String)) :=
-  go provider tools runTool config.onProgress history config.maxIterations
+def converseLoop (provider : Provider) (tools : Array ToolImpl) (history : Array Msg)
+    (config : LoopConfig := {}) : IO (Except LoopFailure (Array Msg × String)) :=
+  go provider tools config.onProgress history config.maxIterations
 
 end LLMClient
