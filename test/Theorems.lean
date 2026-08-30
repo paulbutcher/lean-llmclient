@@ -317,15 +317,38 @@ theorem bedrock_msgJson_role (m : Msg) :
 Converse spells the flag differently from Anthropic, and a result that lost it would reach the
 model as a success carrying error text.
 
-`id` and `output` are the call identifier and the tool's output; neither affects the outcome.
-`.toOption.isSome` answers `true` exactly when the walk to `status` inside the `toolResult` object
-succeeds, that is when the key is present at all, and the claim equates that with `isError`. So a
-failure carries `status` and a success omits it rather than sending `"success"`. That an absent
-`status` is read as a success is a fact about Converse, not something proved here. -/
-theorem bedrock_toolResultJson_status (id output : String) (isError : Bool) :
-    ((Bedrock.toolResultJson id output isError).getObjVal? "toolResult"
+`id` and `output` are the call identifier and the tool's output and `structured` the same output as
+JSON where there is one; none of the three affects the outcome. `.toOption.isSome` answers `true`
+exactly when the walk to `status` inside the `toolResult` object succeeds, that is when the key is
+present at all, and the claim equates that with `isError`. So a failure carries `status` and a
+success omits it rather than sending `"success"`. That an absent `status` is read as a success is a
+fact about Converse, not something proved here. -/
+theorem bedrock_toolResultJson_status (id output : String) (isError : Bool)
+    (structured : Option Json) :
+    ((Bedrock.toolResultJson id output isError structured).getObjVal? "toolResult"
       >>= (·.getObjVal? "status")).toOption.isSome = isError := by
-  cases isError <;> rfl
+  cases isError <;> cases structured <;> rfl
+
+/-- A structured tool result reaches Converse as JSON, and one without reaches it as text, with no
+case in which it arrives as both or as neither. This is the whole point of carrying `structured`
+alongside `output`: a block that fell back to `text` would send the model compressed JSON to read
+back out, and one that sent `json` with nothing in it would lose the result altogether.
+
+`id`, `output` and `isError` are the call identifier, the string output and the failure flag; the
+first two reach the block only as its contents and the third only as the sibling `status` field, so
+none of them decides which key appears. `has p` answers `true` exactly when there is a value at
+every step of `p`, so each side reads the first content block of the `toolResult` object and asks
+whether it holds the named key. The first conjunct says `json` is there exactly when `structured`
+is `some`, and the second that `text` is there exactly when it is `none`; together they say the
+block is one or the other and never both. That Converse reads a `json` block as a structured result
+is a fact about the API rather than anything proved here. -/
+theorem bedrock_toolResultJson_content (id output : String) (isError : Bool)
+    (structured : Option Json) :
+    (Bedrock.toolResultJson id output isError structured).has
+        ["toolResult", "content", Json.Step.index 0, "json"] = structured.isSome ∧
+      (Bedrock.toolResultJson id output isError structured).has
+        ["toolResult", "content", Json.Step.index 0, "text"] = !structured.isSome := by
+  cases structured <;> cases isError <;> exact ⟨rfl, rfl⟩
 
 /-- A request offering no tools carries no `toolConfig` at all, rather than one holding an empty
 list. Converse rejects an empty `tools` array, so a request built the obvious way would fail for

@@ -28,7 +28,11 @@ def toolResultJson (id output : String) (isError : Bool := false) : Json :=
   Json.mkObj (if isError then fields ++ [("is_error", Json.bool true)] else fields)
 
 /-- A lone `.toolResult` becomes a message of its own here, which is right only when it is the one
-result outstanding. `messagesJson` is what a request is built from, and it groups. -/
+result outstanding. `messagesJson` is what a request is built from, and it groups.
+
+`Msg.toolResult`'s `structured` is dropped rather than overlooked: a `tool_result` block's content
+is a string or text and image blocks, with nowhere to put JSON, so `output` is what the model
+sees. Only Converse has a place for it. -/
 def msgJson : LLMClient.Msg → Json
   | .user text => Json.mkObj [("role", "user"), ("content", text)]
   | .assistant text toolCalls =>
@@ -36,7 +40,7 @@ def msgJson : LLMClient.Msg → Json
     let toolBlocks := toolCalls.map fun tc =>
       Json.mkObj [("type", "tool_use"), ("id", tc.id), ("name", tc.name), ("input", tc.input)]
     Json.mkObj [("role", "assistant"), ("content", Json.arr (textBlock ++ toolBlocks))]
-  | .toolResult id output isError =>
+  | .toolResult id output isError _ =>
     Json.mkObj [("role", "user"), ("content", Json.arr #[toolResultJson id output isError])]
 
 /-- The conversation as the Messages API wants it, which is not one message per `Msg`.
@@ -53,7 +57,8 @@ def messagesJson (history : Array LLMClient.Msg) : Array Json :=
   let (acc, pending) := history.foldl (init := ((#[] : Array Json), (#[] : Array Json)))
     fun (acc, pending) msg =>
       match msg with
-      | .toolResult id output isError => (acc, pending.push (toolResultJson id output isError))
+      | .toolResult id output isError _ =>
+        (acc, pending.push (toolResultJson id output isError))
       | other => ((close pending acc).push (msgJson other), #[])
   close pending acc
 

@@ -1,5 +1,9 @@
 # Changelog
 
+## [0.9.0] - 2026-08-30
+
+- `Msg.toolResult` and `ToolImpl` gain an optional structured (JSON) tool result, which Bedrock sends as a Converse `json` block instead of escaped text.
+
 ## [0.8.1] - 2026-08-30
 
 - Expand the theorem documentation in `test/Theorems.lean`.

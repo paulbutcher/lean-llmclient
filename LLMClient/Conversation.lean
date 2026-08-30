@@ -38,13 +38,19 @@ structure LoopFailure where
   history : Array Msg
 
 /-- A call naming a tool that isn't on offer is answered here rather than passed on, since there
-is nothing to pass it to. `.runningTool` is not reported for it, because nothing runs. -/
+is nothing to pass it to. `.runningTool` is not reported for it, because nothing runs.
+
+A tool offering `runStructured` is run through that alone, and the string half of the result is
+its JSON compressed, so what the providers that can only carry a string send is the same answer as
+what Converse sends as JSON. -/
 private def runCall (tools : Array ToolImpl) (onProgress : Progress → IO Unit) (tc : ToolCall) :
-    IO (Except String String) :=
+    IO (Except String (String × Option Json)) :=
   match tools.find? (·.tool.name == tc.name) with
   | some impl => do
     onProgress (.runningTool tc.name)
-    impl.run tc.input
+    match impl.runStructured with
+    | some run => return (← run tc.input).map fun j => (j.compress, some j)
+    | none => return (← impl.run tc.input).map fun output => (output, none)
   | none => pure (.error s!"there is no tool called {tc.name}")
 
 private def go (provider : Provider) (tools : Array ToolImpl) (onProgress : Progress → IO Unit)
@@ -67,10 +73,10 @@ private def go (provider : Provider) (tools : Array ToolImpl) (onProgress : Prog
     else
       let mut history := history
       for tc in resp.toolCalls do
-        let (output, isError) ← match ← runCall tools onProgress tc with
-          | .ok text => pure (text, false)
-          | .error text => pure (text, true)
-        history := history.push (Msg.toolResult tc.id output isError)
+        let (output, isError, structured) ← match ← runCall tools onProgress tc with
+          | .ok (output, structured) => pure (output, false, structured)
+          | .error text => pure (text, true, none)
+        history := history.push (Msg.toolResult tc.id output isError structured)
       go provider tools onProgress history (iterationsLeft - 1)
 termination_by iterationsLeft
 decreasing_by simp_all; omega
@@ -85,7 +91,8 @@ that is not there never reaches the caller: the loop records a `.toolResult` for
 error, saying the tool does not exist, and carries on.
 
 `ToolImpl.run` returning `.error` becomes a `.toolResult` flagged as an error too, with the error
-text as its output.
+text as its output. An entry with a `runStructured` is dispatched to that instead, and its result
+fills in both halves of the `.toolResult`.
 
 `config.onProgress` fires before each request (`.thinking`) and before each tool call
 (`.runningTool name`). Every one of those outcomes, including exhausting `maxIterations`, is

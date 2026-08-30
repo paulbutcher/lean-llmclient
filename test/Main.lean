@@ -315,7 +315,8 @@ def testConverseLoop (r : Results) : IO Results := do
     (match resultUnknown with
       | .ok (h, _) =>
         match h.getD 2 (LLMClient.Msg.user "") with
-        | .toolResult id output isError => id == "call_x" && isError && mentions output "no_such_tool"
+        | .toolResult id output isError structured =>
+          id == "call_x" && isError && structured.isNone && mentions output "no_such_tool"
         | _ => false
       | .error _ => false)
   let realToolRan ← realToolRan.get
@@ -345,6 +346,32 @@ def testConverseLoop (r : Results) : IO Results := do
     (match resultFailing with
       | .ok (_, t) => t == "I couldn't find out"
       | .error _ => false)
+
+  -- A tool that has a JSON answer is asked for it, and the string half of the result is that same
+  -- answer compressed, so the providers that cannot carry JSON still say the same thing.
+  let structuredCount ← IO.mkRef (0 : Nat)
+  let providerStructuredTool : LLMClient.Provider :=
+    { name := "fake"
+      sendRequest := fun _ _ => do
+        let n ← structuredCount.get
+        structuredCount.set (n + 1)
+        if n == 0 then pure (.ok ({ toolCalls := #[toolCall] } : LLMClient.Reply))
+        else pure (.ok ({ text := "it is cloudy" } : LLMClient.Reply)) }
+  let plainRan ← IO.mkRef false
+  let answer := Json.mkObj [("tempC", Json.ofNat 15), ("sky", "cloudy")]
+  let resultStructured ←
+    LLMClient.converseLoop providerStructuredTool
+      #[{ sampleToolImpl (fun _ => plainRan.set true *> pure (.ok "unused")) with
+          runStructured := some fun _ => pure (.ok answer) }]
+      #[LLMClient.Msg.user "weather?"]
+  let r := r.check "converseLoop: runStructured fills in both halves of the result"
+    (match resultStructured with
+      | .ok (h, _) =>
+        h.getD 2 (LLMClient.Msg.user "") ==
+          LLMClient.Msg.toolResult "call_1" answer.compress false (some answer)
+      | .error _ => false)
+  let plainRan ← plainRan.get
+  let r := r.check "converseLoop: a tool with a runStructured is not also run through run" (!plainRan)
 
   let refusalToolCalled ← IO.mkRef false
   let providerRefusal : LLMClient.Provider :=
@@ -580,6 +607,35 @@ def testToolResultError (r : Results) : Results :=
                 #[ LLMClient.Bedrock.toolResultJson "call_1" "the weather service is down" true,
                    LLMClient.Bedrock.toolResultJson "call_2" "15°C, cloudy" ]) ]])
 
+/-- `Theorems.lean` proves Bedrock keys the content block `json` exactly when there is a structured
+result; these pin down that the block holds that value as it stands, and that the two providers
+with nowhere to put it are unaffected by its presence. -/
+def testStructuredResult (r : Results) : Results :=
+  let answer := Json.mkObj [("tempC", Json.ofNat 15), ("sky", "cloudy")]
+  let structured : LLMClient.Msg := .toolResult "call_1" answer.compress false (some answer)
+  let plain : LLMClient.Msg := .toolResult "call_1" answer.compress
+  r
+    |>.check "bedrock: a structured result travels as JSON rather than as escaped text"
+      (LLMClient.Bedrock.msgJson structured ==
+        Json.mkObj
+          [ ("role", "user"),
+            ("content", Json.arr
+              #[Json.mkObj
+                  [ ("toolResult", Json.mkObj
+                      [ ("toolUseId", "call_1"),
+                        ("content", Json.arr #[Json.mkObj [("json", answer)]]) ]) ]]) ])
+    |>.check "bedrock: grouping a run of results keeps each block's own payload"
+      (LLMClient.Bedrock.messagesJson #[structured, plain] ==
+        #[Json.mkObj
+            [ ("role", "user"),
+              ("content", Json.arr
+                #[ LLMClient.Bedrock.toolResultJson "call_1" answer.compress false (some answer),
+                   LLMClient.Bedrock.toolResultJson "call_1" answer.compress ]) ]])
+    |>.check "claude: a structured result encodes exactly as one without"
+      (LLMClient.Claude.msgJson structured == LLMClient.Claude.msgJson plain)
+    |>.check "openai: a structured result encodes exactly as one without"
+      (LLMClient.OpenAI.msgJson structured == LLMClient.OpenAI.msgJson plain)
+
 def testBedrock (r : Results) : Results :=
   open LLMClient.Bedrock in
   let r := r
@@ -698,6 +754,7 @@ def runAll : IO Results := do
   let r := testBedrockRequestBody r
   let r := testToolResultBatching r
   let r := testToolResultError r
+  let r := testStructuredResult r
   testConverseLoop r
 
 def main : IO UInt32 := do

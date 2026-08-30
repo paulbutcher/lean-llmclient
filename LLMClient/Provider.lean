@@ -23,6 +23,10 @@ failure out of. -/
 structure ToolImpl where
   tool : LLMClient.Tool
   run : Json → IO (Except String String)
+  /-- The same answer as `run`, as JSON, for a tool that has one. `converseLoop` prefers this and
+  compresses what it returns to fill in `run`'s half of the result, so a tool supplying both is
+  still run once and the two cannot disagree. -/
+  runStructured : Option (Json → IO (Except String Json)) := none
 
 /-- A tool call the model asked for. `input` is `{}` for tools that take no arguments. -/
 structure ToolCall where
@@ -36,7 +40,12 @@ this and replay it on the next request. -/
 inductive Msg where
   | user (text : String)
   | assistant (text : String) (toolCalls : Array LLMClient.ToolCall := #[])
+  /-- `structured` is the same answer as `output`, as JSON, for the providers whose wire format can
+  carry one; the rest send `output`, which says the same thing with a layer of escaping. A caller
+  persisting history need only keep `output`, since replaying without `structured` loses nothing
+  the model has not already been told. -/
   | toolResult (id : String) (output : String) (isError : Bool := false)
+      (structured : Option Json := none)
 deriving Inhabited, BEq
 
 /-- A provider's response, translated out of its own wire format. Named `Reply` (not

@@ -88,6 +88,8 @@ match ← converseLoop provider #[getWeatherImpl] history config with
 
 `config` is optional; drop it (`converseLoop provider #[getWeatherImpl] history`) to get the defaults: `maxIterations := 5` and no progress reporting. `maxIterations` bounds how many tool round trips are allowed before `converseLoop` gives up, since a model can in principle keep asking for tools forever.
 
+A tool whose answer is really JSON can say so with `runStructured`, an optional sibling of `run`. `converseLoop` prefers it where it is there, records the result in both halves of a `Msg.toolResult`, and Bedrock sends it as a Converse `json` block rather than as an escaped string. The Messages and Chat Completions APIs have nowhere to put JSON, so they send the string as before, which is also all a caller persisting history needs to keep.
+
 `.error` carries a `LoopFailure`, which is the message *and* the history accumulated up to the failure. A turn can fail after its tools have already run: the model asked, the tools did what they were asked, and the round trip carrying their results back is what failed. Those calls have changed whatever they change, so a caller that persists conversations should record `failure.history` rather than lose it along with the error.
 
 That history ends mid-exchange, on the tool results rather than on a reply. Both the Converse and Messages APIs require roles to alternate, so a caller replaying it has to close it off with an assistant turn of its own before appending anything further.

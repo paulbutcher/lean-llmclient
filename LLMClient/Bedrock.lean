@@ -45,10 +45,17 @@ def path (config : Config) : String := s!"/model/{config.model}/converse"
 
 /-- One `toolResult` block, as it appears in the content of the user message answering a request
 for tools. `status` is omitted rather than sent as `"success"`, in the same way as the system
-prompt. -/
-@[expose] def toolResultJson (id output : String) (isError : Bool := false) : Json :=
+prompt.
+
+Converse is alone among the providers here in taking a result as JSON rather than as a string, so
+a `structured` result goes in a `json` block and `output` is sent only when there is none. -/
+@[expose] def toolResultJson (id output : String) (isError : Bool := false)
+    (structured : Option Json := none) : Json :=
+  let content := match structured with
+    | some v => Json.mkObj [("json", v)]
+    | none => Json.mkObj [("text", output)]
   let fields : List (String × Json) :=
-    [ ("toolUseId", id), ("content", Json.arr #[Json.mkObj [("text", output)]]) ]
+    [ ("toolUseId", id), ("content", Json.arr #[content]) ]
   Json.mkObj
     [ ("toolResult",
         Json.mkObj (if isError then fields ++ [("status", Json.str "error")] else fields)) ]
@@ -65,8 +72,10 @@ result outstanding. `messagesJson` is what a request is built from, and it group
     let textBlock := if text.isEmpty then #[] else #[Json.mkObj [("text", text)]]
     let toolBlocks := toolCalls.map toolCallJson
     Json.mkObj [("role", "assistant"), ("content", Json.arr (textBlock ++ toolBlocks))]
-  | .toolResult id output isError =>
-    Json.mkObj [("role", "user"), ("content", Json.arr #[toolResultJson id output isError])]
+  | .toolResult id output isError structured =>
+    Json.mkObj
+      [ ("role", "user"),
+        ("content", Json.arr #[toolResultJson id output isError structured]) ]
 
 /-- The conversation as Converse wants it, which is not one message per `Msg`.
 
@@ -83,7 +92,8 @@ So a run of consecutive `.toolResult`s becomes one message. Everything else maps
   let (acc, pending) := history.foldl (init := ((#[] : Array Json), (#[] : Array Json)))
     fun (acc, pending) msg =>
       match msg with
-      | .toolResult id output isError => (acc, pending.push (toolResultJson id output isError))
+      | .toolResult id output isError structured =>
+        (acc, pending.push (toolResultJson id output isError structured))
       | other => ((close pending acc).push (msgJson other), #[])
   close pending acc
 

@@ -33,7 +33,10 @@ block inside a user message the way Anthropic does.
 
 `Msg.toolResult`'s `isError` is dropped here rather than overlooked: a Chat Completions tool
 message has no field for it, so a failure reaches the model only through the text of `output`.
-Anthropic's `is_error` and Converse's `status` both carry it. -/
+Anthropic's `is_error` and Converse's `status` both carry it.
+
+`structured` is dropped for the same reason: a tool message's `content` is a string, and only
+Converse has a place for JSON. -/
 def msgJson : LLMClient.Msg → Json
   | .user text => Json.mkObj [("role", "user"), ("content", text)]
   | .assistant text toolCalls =>
@@ -44,7 +47,7 @@ def msgJson : LLMClient.Msg → Json
       Json.mkObj
         [ ("role", "assistant"), ("content", content),
           ("tool_calls", Json.arr (toolCalls.map toolCallJson)) ]
-  | .toolResult id output _ =>
+  | .toolResult id output _ _ =>
     Json.mkObj [("role", "tool"), ("tool_call_id", id), ("content", output)]
 
 def errorMessageOf (j : Json) : String :=
