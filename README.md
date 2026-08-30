@@ -1,12 +1,6 @@
 # LLMClient
 
-A provider-agnostic Lean 4 client for LLM chat APIs. `LLMClient` defines a single
-request/response vocabulary (`Msg`, `Tool`, `ToolImpl`, `ToolCall`, `Reply`, `Config`) and a `Provider`
-interface that drives one round trip against a backend; `LLMClient.OpenAI`, `LLMClient.Claude` and
-`LLMClient.Bedrock` implement that interface against the OpenAI Chat Completions, Anthropic
-Messages and Amazon Bedrock Converse APIs respectively. Callers write their conversation loop
-once against `Provider`/`Msg`/`Reply` and swap backends by swapping which `Provider` they
-construct.
+A provider-agnostic Lean 4 client for LLM chat APIs. `LLMClient` defines a single request/response vocabulary (`Msg`, `Tool`, `ToolImpl`, `ToolCall`, `Reply`, `Config`) and a `Provider` interface that drives one round trip against a backend; `LLMClient.OpenAI`, `LLMClient.Claude` and `LLMClient.Bedrock` implement that interface against the OpenAI Chat Completions, Anthropic Messages and Amazon Bedrock Converse APIs respectively. Callers write their conversation loop once against `Provider`/`Msg`/`Reply` and swap backends by swapping which `Provider` they construct.
 
 ## Adding it to your project
 
@@ -19,15 +13,7 @@ git = "https://github.com/paulbutcher/lean-llmclient"
 rev = "main"
 ```
 
-`LLMClient` depends on [`leancurl`](https://github.com/paulbutcher/leancurl) for HTTP, which
-compiles a small C shim against `libcurl`. Building anything that depends on `LLMClient` therefore
-needs `pkg-config`, `libcurl` development headers, and a C compiler available (e.g. on Debian/
-Ubuntu, `pkg-config` and `libcurl4-openssl-dev`). It also depends on
-[`lean-json`](https://github.com/paulbutcher/lean-json) for the `Json` type that `Tool.schema`,
-`ToolCall.input` and `ToolImpl.run` are written in, and on
-[`lean-aws`](https://github.com/paulbutcher/lean-aws) and, through it,
-[`leancrypto`](https://github.com/paulbutcher/leancrypto) for request signing; those three are
-pure Lean and add no build requirements of their own.
+`LLMClient` depends on [`leancurl`](https://github.com/paulbutcher/leancurl) for HTTP, which compiles a small C shim against `libcurl`. Building anything that depends on `LLMClient` therefore needs `pkg-config`, `libcurl` development headers, and a C compiler available (e.g. on Debian/Ubuntu, `pkg-config` and `libcurl4-openssl-dev`). It also depends on [`lean-json`](https://github.com/paulbutcher/lean-json) for the `Json` type that `Tool.schema`, `ToolCall.input` and `ToolImpl.run` are written in, and on [`lean-aws`](https://github.com/paulbutcher/lean-aws) and, through it, [`leancrypto`](https://github.com/paulbutcher/leancrypto) for request signing; those three are pure Lean and add no build requirements of their own.
 
 ## Usage
 
@@ -46,23 +32,13 @@ def main : IO Unit := do
   | .error msg => IO.eprintln s!"request failed: {msg}"
 ```
 
-Swap `Claude.provider` for `OpenAI.provider` to talk to OpenAI instead; both take the API key
-first and then an optional `Config` (`apiUrl`, `model`, `maxOutputTokens`, `systemPrompt`) if you
-want to override the defaults. `systemPrompt` is sent as a top-level `system` field by Claude and
-as a leading `developer` message by OpenAI; leave it `none` to omit it from the request entirely.
-`Bedrock.provider creds (Bedrock.defaultConfig region)` reaches everything Amazon Bedrock hosts
-through its Converse API, chosen with `Config.model`; it signs with SigV4, so it takes AWS
-credentials in place of an API key, and its `Config` carries `region` rather than `apiUrl`.
-`Bedrock.credentialsFromEnv` and `Bedrock.regionFromEnv` read the usual `AWS_*` variables.
+Swap `Claude.provider` for `OpenAI.provider` to talk to OpenAI instead; both take the API key first and then an optional `Config` (`apiUrl`, `model`, `maxOutputTokens`, `systemPrompt`) if you want to override the defaults. `systemPrompt` is sent as a top-level `system` field by Claude and as a leading `developer` message by OpenAI; leave it `none` to omit it from the request entirely. `Bedrock.provider creds (Bedrock.defaultConfig region)` reaches everything Amazon Bedrock hosts through its Converse API, chosen with `Config.model`; it signs with SigV4, so it takes AWS credentials in place of an API key, and its `Config` carries `region` rather than `apiUrl`. `Bedrock.credentialsFromEnv` and `Bedrock.regionFromEnv` read the usual `AWS_*` variables.
 
 `tools` defaults to `#[]`, so it can be left off when you're not offering any (as above).
 
 ## Tools
 
-Tool calls round-trip through `Tool` (what you expose to the model) and `ToolCall`/`Msg.toolResult`
-(what the model asks for and what you feed back), independent of any provider's wire format. The
-`Json` they carry is `lean-json`'s, re-exported by `import LLMClient`, so there's nothing extra to
-import:
+Tool calls round-trip through `Tool` (what you expose to the model) and `ToolCall`/`Msg.toolResult` (what the model asks for and what you feed back), independent of any provider's wire format. The `Json` they carry is `lean-json`'s, re-exported by `import LLMClient`, so there's nothing extra to import:
 
 ```lean
 def getWeather : Tool :=
@@ -88,9 +64,7 @@ match ← provider.sendRequest history #[getWeather] with
 
 ## Multi-turn tool loops
 
-The `Tools` example above shows a single round trip. Most tool-using conversations need several:
-send the result of each tool call back to the model and keep going until it stops asking for
-tools. `converseLoop` runs that exchange for you, in place of writing the loop yourself:
+The `Tools` example above shows a single round trip. Most tool-using conversations need several: send the result of each tool call back to the model and keep going until it stops asking for tools. `converseLoop` runs that exchange for you, in place of writing the loop yourself:
 
 ```lean
 def getWeatherImpl : ToolImpl :=
@@ -112,26 +86,14 @@ match ← converseLoop provider #[getWeatherImpl] history config with
 | .ok (_, text) => IO.println text
 ```
 
-`config` is optional; drop it (`converseLoop provider #[getWeatherImpl] history`)
-to get the defaults: `maxIterations := 5` and no progress reporting. `maxIterations` bounds how
-many tool round trips are allowed before `converseLoop` gives up, since a model can in principle
-keep asking for tools forever.
+`config` is optional; drop it (`converseLoop provider #[getWeatherImpl] history`) to get the defaults: `maxIterations := 5` and no progress reporting. `maxIterations` bounds how many tool round trips are allowed before `converseLoop` gives up, since a model can in principle keep asking for tools forever.
 
-`.error` carries a `LoopFailure`, which is the message *and* the history accumulated up to the
-failure. A turn can fail after its tools have already run: the model asked, the tools did what
-they were asked, and the round trip carrying their results back is what failed. Those calls have
-changed whatever they change, so a caller that persists conversations should record
-`failure.history` rather than lose it along with the error.
+`.error` carries a `LoopFailure`, which is the message *and* the history accumulated up to the failure. A turn can fail after its tools have already run: the model asked, the tools did what they were asked, and the round trip carrying their results back is what failed. Those calls have changed whatever they change, so a caller that persists conversations should record `failure.history` rather than lose it along with the error.
 
-That history ends mid-exchange, on the tool results rather than on a reply. Both the Converse and
-Messages APIs require roles to alternate, so a caller replaying it has to close it off with an
-assistant turn of its own before appending anything further.
+That history ends mid-exchange, on the tool results rather than on a reply. Both the Converse and Messages APIs require roles to alternate, so a caller replaying it has to close it off with an assistant turn of its own before appending anything further.
 
 ## Development
 
 - `lake build` builds the library.
-- `lake test` runs the tests. They live in the `test/` subproject, which has its own lakefile and
-  requires this package by path, so test-only dependencies never reach a downstream consumer.
-- The tests are pure JSON encode/decode checks against each provider's wire format, plus
-  `test/Theorems.lean`, which proves the round-trip and message-shape invariants those formats
-  depend on. Nothing makes a network call, so no API key is needed to run them.
+- `lake test` runs the tests. They live in the `test/` subproject, which has its own lakefile and requires this package by path, so test-only dependencies never reach a downstream consumer.
+- The tests are pure JSON encode/decode checks against each provider's wire format, plus `test/Theorems.lean`, which proves the round-trip and message-shape invariants those formats depend on. Nothing makes a network call, so no API key is needed to run them.

@@ -4,6 +4,10 @@
 
 Breaking changes to `converseLoop` and `Msg.toolResult` to improve structure and error reporting.
 
+## [0.7.0] - 2026-08-22
+
+Fix error handling for the Converse API.
+
 ## [0.6.0] - 2026-08-21
 
 Switch to lean-json
@@ -18,8 +22,7 @@ Tidying up and restructuring.
 
 ## [0.4.1] - 2026-08-11
 
-`converseLoop` now returns `.ok (history, text)` when it exhausts
-`config.maxIterations`, instead of `.error`.
+`converseLoop` now returns `.ok (history, text)` when it exhausts `config.maxIterations`, instead of `.error`.
 
 ## [0.4.0] - 2026-08-11
 
