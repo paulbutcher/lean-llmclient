@@ -1,5 +1,9 @@
 # Changelog
 
+## [0.8.1] - 2026-08-30
+
+- Expand the theorem documentation in `test/Theorems.lean`.
+
 ## [0.8.0] - 2026-08-23
 
 Breaking changes to `converseLoop` and `Msg.toolResult` to improve structure and error reporting.
