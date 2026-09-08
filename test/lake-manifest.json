@@ -13,7 +13,7 @@
    "subDir": null,
    "scope": "",
    "rev": "e053465afe3a29ed24f36a1f41e2c7f287ce0664",
-   "name": "aws",
+   "name": "leanaws",
    "manifestFile": "lake-manifest.json",
    "inputRev": "v0.3.0",
    "inherited": true,
