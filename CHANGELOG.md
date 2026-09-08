@@ -1,5 +1,9 @@
 # Changelog
 
+## [0.9.2] - 2026-09-08
+
+- Update dependencies.
+
 ## [0.9.1] - 2026-08-30
 
 - Pin dependencies.
