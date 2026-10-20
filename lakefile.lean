@@ -9,9 +9,9 @@ package LLMClient where
   version := v!"0.9.3"
   leanOptions := #[⟨`warningAsError, true⟩]
 
-require json from git "https://github.com/paulbutcher/lean-json"@"v0.3.0"
-require leancurl from git "https://github.com/paulbutcher/leancurl"@"v0.3.1"
-require leanaws from git "https://github.com/paulbutcher/lean-aws"@"v0.3.0"
+require json from git "https://github.com/paulbutcher/lean-json"@"v0.3.1"
+require leancurl from git "https://github.com/paulbutcher/leancurl"@"v0.3.2"
+require leanaws from git "https://github.com/paulbutcher/lean-aws"@"v0.3.2"
 
 @[default_target] lean_lib LLMClient
 
