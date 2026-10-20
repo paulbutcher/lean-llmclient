@@ -1,5 +1,9 @@
 # Changelog
 
+## [0.9.4] - 2026-10-20
+
+- Chore: bump dependencies.
+
 ## [0.9.3] - 2026-09-08
 
 - Require lean-aws by the name it declares, so it resolves once for consumers that also depend on it.
