@@ -101,7 +101,7 @@ That history ends mid-exchange, on the tool results rather than on a reply. The 
 `converseLoop` runs the tools in its own monad for the whole turn. A caller that owns its state elsewhere, such as an Elm-style `update`, can drive the same rules one round trip at a time, since `converseLoop` is built from them. Each step is pure and answers a `Step`:
 
 - `.send turn`: send `turn.history`, and pass the reply to `turn.receive`.
-- `.runTools pending`: run `pending.calls` and pass a function answering each one to `pending.answer`.
+- `.runTools pending`: run `pending.calls` and pass a function answering each one to `pending.answer`, or to `pending.answerWith` when the calls change state that later calls read.
 - `.done history text`: the turn is over, with what `converseLoop` would have returned.
 
 ```lean
@@ -109,12 +109,16 @@ def start (history : Array Msg) : Step := Turn.start history (maxIterations := 5
 
 def onReply (turn : Turn) (reply : Reply) : Step := turn.receive reply
 
-def onTools (pending : Pending) (model : Model) : Step :=
-  pending.answer fun call =>
-    (unknownTool? #["list_todos", "add_todo"] call).getD (runTool model call)
+def onTools (pending : Pending) (model : Model) : Model × Step :=
+  pending.answerWith (s := model) fun model call =>
+    match unknownTool? #["list_todos", "add_todo"] call with
+    | some outcome => (model, outcome)
+    | none => runTool model call
 ```
 
-A refusal, a truncated reply and a reply asking for no tools end the turn. The iteration cap travels in the `Turn` and `Pending` values, which only the step functions construct, so it cannot be lost between round trips. `unknownTool?` answers a call naming a tool not on offer as `converseLoop` does, and `appendResults` is the rule `pending.answer` uses to turn outcomes into tool results: one per call, in order, flagged as an error exactly when the outcome is `.error`. When a request fails after tools have run, `turn.history` ends on their results; close it off with `closeOff` as above.
+`answerWith` runs the calls in order, threading the state from each call to the next, so a reply asking for `add_todo` then `list_todos` lists the new todo. It returns the final state with the step, which is the one `answer` would return for the same outcomes.
+
+A refusal, a truncated reply and a reply asking for no tools end the turn. The iteration cap travels in the `Turn` and `Pending` values, which only the step functions construct, so it cannot be lost between round trips. `unknownTool?` answers a call naming a tool not on offer as `converseLoop` does, and `appendResults` is the rule `answer` and `answerWith` use to turn outcomes into tool results: one per call, in order, flagged as an error exactly when the outcome is `.error`. When a request fails after tools have run, `turn.history` ends on their results; close it off with `closeOff` as above.
 
 ## Storing a conversation
 

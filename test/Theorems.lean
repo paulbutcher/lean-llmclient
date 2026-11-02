@@ -378,6 +378,67 @@ theorem receive_ends (turn : Turn) (reply : Reply)
   repeat' split
   all_goals first | exact ⟨_, _, rfl⟩ | simp_all
 
+/-- The outcomes `Pending.answerWith` hands on, written as its fold writes them. -/
+private def foldOutcomes (run : σ → ToolCall → σ × ToolOutcome) (s : σ) (calls : Array ToolCall) :
+    σ × Array ToolOutcome :=
+  calls.foldl (init := (s, #[])) fun (s, outcomes) call =>
+    let (s, outcome) := run s call
+    (s, outcomes.push outcome)
+
+private theorem foldOutcomes_stateless (f : ToolCall → ToolOutcome) (calls : List ToolCall)
+    (acc : Array ToolOutcome) :
+    (calls.foldl (init := ((), acc)) fun ((), outcomes) call => ((), outcomes.push (f call))).2 =
+      acc ++ (calls.map f).toArray := by
+  induction calls generalizing acc with
+  | nil => simp
+  | cons c cs ih => simp [ih]
+
+private theorem foldOutcomes_state (run : σ → ToolCall → σ × ToolOutcome) (calls : List ToolCall)
+    (s : σ) (acc : Array ToolOutcome) :
+    (calls.foldl (init := (s, acc)) fun (s, outcomes) call =>
+        let (s, outcome) := run s call
+        (s, outcomes.push outcome)).1 =
+      calls.foldl (fun s call => (run s call).1) s := by
+  induction calls generalizing s acc with
+  | nil => rfl
+  | cons c cs ih => simp only [List.foldl_cons]; exact ih ..
+
+/-- Answering tool calls with state moves the turn on exactly as answering them without state
+would, given the same outcomes. So the iteration cap, giving up when it runs out, and the tool
+results `appendResults_ids` and `appendResults_isError` describe all hold for `answerWith` as they
+do for `answer`, and a caller choosing between the two cannot change how the turn proceeds.
+
+`run` is any stateful runner starting from `s`, and `foldOutcomes run s pending.calls` is the state
+and outcomes its fold over the calls produced. `f` is any stateless runner which, mapped over the
+same calls, gives those outcomes; the claim is that the step `answerWith` returns is the step
+`pending.answer f` returns. Such an `f` exists whenever no two calls are equal values, which call
+ids make so when a provider issues each call in a reply its own id; nothing here proves that a
+provider does, and for a reply that repeats a call exactly with differing outcomes the claim is
+vacuous. -/
+theorem answerWith_step (pending : Pending) (run : σ → ToolCall → σ × ToolOutcome) (s : σ)
+    (f : ToolCall → ToolOutcome)
+    (h : pending.calls.map f = (foldOutcomes run s pending.calls).2) :
+    (pending.answerWith run s).2 = pending.answer f := by
+  have hf : (pending.calls.foldl (init := ((), #[]))
+      fun ((), outcomes) call => ((), outcomes.push (f call))).2 = pending.calls.map f := by
+    rw [← Array.foldl_toList, foldOutcomes_stateless]; exact Array.ext' (by simp)
+  simp only [Pending.answer, Pending.answerWith]
+  rw [hf] at *
+  rw [h]; rfl
+
+/-- The state `answerWith` returns is what running each call once, in order, makes of the state it
+started from. A caller keeping its model in that state, such as a todo list, sees a call's effect
+in every call after it, and sees no call skipped, repeated or reordered.
+
+`run` takes a state and a call and answers the next state with the call's outcome, and `s` is the
+state before the first call. The right side folds `run`'s state half over `pending.calls` from the
+left, so it is the state after the first call fed to the second and so on to the last; the claim
+is that this is the state `answerWith` returns. -/
+theorem answerWith_state (pending : Pending) (run : σ → ToolCall → σ × ToolOutcome) (s : σ) :
+    (pending.answerWith run s).1 = pending.calls.foldl (fun s call => (run s call).1) s := by
+  simp only [Pending.answerWith]
+  rw [← Array.foldl_toList, ← Array.foldl_toList, foldOutcomes_state]
+
 /-- A closed-off history never ends on a tool result. The APIs require roles to alternate, so a
 history ending on a tool result cannot be continued with a user turn; this is what makes it safe
 to replay.

@@ -74,7 +74,7 @@ returns: the model's reply, or a fixed message saying why there is none. -/
 inductive Step where
   /-- Send `turn.history`, and pass the reply to `turn.receive`. -/
   | send (turn : Turn)
-  /-- Run `pending.calls`, and pass their outcomes to `pending.answer`. -/
+  /-- Run `pending.calls`, and pass their outcomes to `pending.answer` or `pending.answerWith`. -/
   | runTools (pending : Pending)
   | done (history : Array Msg) (text : String)
 
@@ -109,9 +109,18 @@ private def Pending.resume (pending : Pending) (outcomes : Array ToolOutcome) : 
   | 0 => giveUp history
   | n + 1 => .send ⟨history, n + 1⟩
 
-/-- `run` answers each call; `unknownTool?` answers one naming a tool that is not on offer. -/
+/-- `run` answers each call in order, against the state the call before it left, and the final
+state is returned with the step. `unknownTool?` answers one naming a tool that is not on offer. -/
+def Pending.answerWith (pending : Pending) (run : σ → ToolCall → σ × ToolOutcome) (s : σ) :
+    σ × Step :=
+  let (s, outcomes) := pending.calls.foldl (init := (s, #[])) fun (s, outcomes) call =>
+    let (s, outcome) := run s call
+    (s, outcomes.push outcome)
+  (s, pending.resume outcomes)
+
+/-- `answerWith` for a `run` that needs no state. -/
 def Pending.answer (pending : Pending) (run : ToolCall → ToolOutcome) : Step :=
-  pending.resume (pending.calls.map run)
+  (pending.answerWith (fun () call => ((), run call)) ()).2
 
 private def Step.measure : Step → Nat
   | .send turn => 2 * turn.iterationsLeft + 2

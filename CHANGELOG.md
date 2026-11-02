@@ -1,5 +1,9 @@
 # Changelog
 
+## [0.12.0] - 2026-11-02
+
+- `Pending.answerWith` runs a turn's tool calls in order, threading a state from each call to the next.
+
 ## [0.11.0] - 2026-11-02
 
 - Breaking: `Msg.assistant` holds the turn's `Block`s in order, and `Reply` holds them as `content`, with `text` and `toolCalls` read from it.
