@@ -10,7 +10,7 @@ public section
 
 namespace LLMClient.Curl
 
-def transport : LLMClient.Transport := fun url body headers => do
+def transport : LLMClient.Transport IO := fun url body headers => do
   return match ← Leancurl.Curl.post url body headers with
     | .ok resp => .ok { status := resp.status, body := resp.body }
     | .error e => .error e.message

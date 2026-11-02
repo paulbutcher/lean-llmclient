@@ -188,9 +188,9 @@ the time the request is signed at.
 
 `signed.headers` is the complete set to send: the signer returns the caller's own headers
 alongside the ones it owns, minus `host`, which the transport derives from the URL. -/
-def sendRequest (transport : LLMClient.Transport) (clock : IO Aws.Sigv4.Timestamp)
+def sendRequest [Monad m] (transport : LLMClient.Transport m) (clock : m Aws.Sigv4.Timestamp)
     (config : Config) (creds : Aws.Sigv4.Credentials) (history : Array LLMClient.Msg)
-    (tools : Array LLMClient.Tool := #[]) : IO (Except String LLMClient.Reply) := do
+    (tools : Array LLMClient.Tool := #[]) : m (Except String LLMClient.Reply) := do
   let body := (requestBody config history tools).compress.toUTF8
   let signed := Aws.Sigv4.sign creds { region := config.region, service := "bedrock" } (← clock)
     { method := "POST",
@@ -205,10 +205,12 @@ def sendRequest (transport : LLMClient.Transport) (clock : IO Aws.Sigv4.Timestam
 /-- Build the provider from freshly resolved credentials each time a request is served rather
 than once at start-up; the temporary credentials an execution role issues are rotated underneath
 a long-lived process. -/
-def provider (creds : Aws.Sigv4.Credentials) (config : Config)
-    (transport : LLMClient.Transport := Curl.transport)
-    (clock : IO Aws.Sigv4.Timestamp := currentTimestamp) : LLMClient.Provider :=
+def providerWith [Monad m] (transport : LLMClient.Transport m) (clock : m Aws.Sigv4.Timestamp)
+    (creds : Aws.Sigv4.Credentials) (config : Config) : LLMClient.Provider m :=
   { name := "bedrock"
     sendRequest := fun history tools => sendRequest transport clock config creds history tools }
+
+def provider (creds : Aws.Sigv4.Credentials) (config : Config) : LLMClient.Provider IO :=
+  providerWith Curl.transport currentTimestamp creds config
 
 end LLMClient.Bedrock

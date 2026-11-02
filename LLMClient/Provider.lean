@@ -19,14 +19,14 @@ structure Tool where
 /-- A tool paired with the code that runs it, so that anything advertised to a model has an
 implementation behind it by construction. `run` returns `.error` for a call that failed, which
 reaches the model as a tool result flagged as an error rather than as prose it has to read
-failure out of. -/
-structure ToolImpl where
+failure out of. `m` is the monad the tool runs in, `IO` natively and `Async` in a browser. -/
+structure ToolImpl (m : Type → Type) where
   tool : LLMClient.Tool
-  run : Json → IO (Except String String)
+  run : Json → m (Except String String)
   /-- The same answer as `run`, as JSON, for a tool that has one. `converseLoop` prefers this and
   compresses what it returns to fill in `run`'s half of the result, so a tool supplying both is
   still run once and the two cannot disagree. -/
-  runStructured : Option (Json → IO (Except String Json)) := none
+  runStructured : Option (Json → m (Except String Json)) := none
 
 /-- A tool call the model asked for. `input` is `{}` for tools that take no arguments. -/
 structure ToolCall where
@@ -75,9 +75,9 @@ structure HttpResponse where
 /-- Posts `body` to `url` with `headers`, the one HTTP operation every provider needs, so that
 which HTTP client carries it is the caller's choice. `.error` means no response arrived at all; a
 response with an error status is still `.ok`, since its body says what went wrong. -/
-abbrev Transport :=
+abbrev Transport (m : Type → Type) :=
   (url : String) → (body : ByteArray) → (headers : List (String × String)) →
-    IO (Except String HttpResponse)
+    m (Except String HttpResponse)
 
 /-- A backend capable of driving one request/response round trip against an LLM API.
 
@@ -85,10 +85,10 @@ Credentials are supplied when a provider is constructed rather than on each call
 they are differs by backend: a bearer token for some, a set of AWS credentials to sign with for
 others. Constructing a provider is just closing over them, so a caller holding credentials that
 expire rebuilds it as often as it needs to. -/
-structure Provider where
+structure Provider (m : Type → Type) where
   name : String
   sendRequest :
     (history : Array LLMClient.Msg) → (tools : Array LLMClient.Tool := #[]) →
-      IO (Except String LLMClient.Reply)
+      m (Except String LLMClient.Reply)
 
 end LLMClient

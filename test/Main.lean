@@ -232,7 +232,7 @@ def testClaudeSystemPrompt (r : Results) : Results :=
       ((bodySome.getObjVal? "messages").toOption == (bodyNone.getObjVal? "messages").toOption)
 
 /-- `sampleTool` with an implementation behind it, which is the pairing `converseLoop` takes. -/
-def sampleToolImpl (run : Json → IO (Except String String)) : LLMClient.ToolImpl :=
+def sampleToolImpl (run : Json → IO (Except String String)) : LLMClient.ToolImpl IO :=
   { tool := sampleTool, run }
 
 def mentions (haystack needle : String) : Bool := (haystack.splitOn needle).length > 1
@@ -240,7 +240,7 @@ def mentions (haystack needle : String) : Bool := (haystack.splitOn needle).leng
 def testConverseLoop (r : Results) : IO Results := do
   -- No config is passed here, so the default `LoopConfig` (including its no-op `onProgress`)
   -- is exercised too.
-  let provider1 : LLMClient.Provider :=
+  let provider1 : LLMClient.Provider IO :=
     { name := "fake"
       sendRequest := fun _ _ => pure (.ok ({ text := "hello", toolCalls := #[] } : LLMClient.Reply)) }
   let result1 ← LLMClient.converseLoop provider1 #[] #[LLMClient.Msg.user "hi"]
@@ -253,7 +253,7 @@ def testConverseLoop (r : Results) : IO Results := do
   let toolsOffered ← IO.mkRef (#[] : Array LLMClient.Tool)
   let toolCall : LLMClient.ToolCall :=
     { id := "call_1", name := "get_weather", input := Json.mkObj [("city", "Paris")] }
-  let provider2 : LLMClient.Provider :=
+  let provider2 : LLMClient.Provider IO :=
     { name := "fake"
       sendRequest := fun _ tools => do
         toolsOffered.set tools
@@ -268,7 +268,7 @@ def testConverseLoop (r : Results) : IO Results := do
     inputsSeen.modify (·.push input)
     pure (.ok "15°C, cloudy")]
   let progressLog ← IO.mkRef (#[] : Array LLMClient.Progress)
-  let config2 : LLMClient.LoopConfig := { onProgress := fun p => progressLog.modify (·.push p) }
+  let config2 : LLMClient.LoopConfig IO := { onProgress := fun p => progressLog.modify (·.push p) }
   let result2 ← LLMClient.converseLoop provider2 tools2 #[LLMClient.Msg.user "weather?"] config2
   let expectedHistory2 : Array LLMClient.Msg :=
     #[ LLMClient.Msg.user "weather?",
@@ -295,7 +295,7 @@ def testConverseLoop (r : Results) : IO Results := do
   -- loop answers it itself rather than handing the caller a call it cannot serve.
   let unknownCount ← IO.mkRef (0 : Nat)
   let unknownCall : LLMClient.ToolCall := { id := "call_x", name := "no_such_tool" }
-  let providerUnknown : LLMClient.Provider :=
+  let providerUnknown : LLMClient.Provider IO :=
     { name := "fake"
       sendRequest := fun _ _ => do
         let n ← unknownCount.get
@@ -325,7 +325,7 @@ def testConverseLoop (r : Results) : IO Results := do
   -- A tool that fails reaches the model as a result flagged as an error, rather than as prose it
   -- has to read the failure out of.
   let failingCount ← IO.mkRef (0 : Nat)
-  let providerFailingTool : LLMClient.Provider :=
+  let providerFailingTool : LLMClient.Provider IO :=
     { name := "fake"
       sendRequest := fun _ _ => do
         let n ← failingCount.get
@@ -350,7 +350,7 @@ def testConverseLoop (r : Results) : IO Results := do
   -- A tool that has a JSON answer is asked for it, and the string half of the result is that same
   -- answer compressed, so the providers that cannot carry JSON still say the same thing.
   let structuredCount ← IO.mkRef (0 : Nat)
-  let providerStructuredTool : LLMClient.Provider :=
+  let providerStructuredTool : LLMClient.Provider IO :=
     { name := "fake"
       sendRequest := fun _ _ => do
         let n ← structuredCount.get
@@ -374,7 +374,7 @@ def testConverseLoop (r : Results) : IO Results := do
   let r := r.check "converseLoop: a tool with a runStructured is not also run through run" (!plainRan)
 
   let refusalToolCalled ← IO.mkRef false
-  let providerRefusal : LLMClient.Provider :=
+  let providerRefusal : LLMClient.Provider IO :=
     { name := "fake"
       sendRequest := fun _ _ =>
         pure (.ok ({ text := "", toolCalls := #[], isRefusal := true } : LLMClient.Reply)) }
@@ -389,7 +389,7 @@ def testConverseLoop (r : Results) : IO Results := do
   let r := r.check "converseLoop: isRefusal runs no tool" (!refusalToolCalled)
 
   let truncatedToolCalled ← IO.mkRef false
-  let providerTruncated : LLMClient.Provider :=
+  let providerTruncated : LLMClient.Provider IO :=
     { name := "fake"
       sendRequest := fun _ _ =>
         pure (.ok ({ text := "", toolCalls := #[], isTruncated := true } : LLMClient.Reply)) }
@@ -407,14 +407,14 @@ def testConverseLoop (r : Results) : IO Results := do
   -- maxIterations := 0 gives up before ever calling the provider, so there's no history to
   -- preserve; this is the one exhaustion shape that still stops immediately.
   let exhaustedProviderCalled ← IO.mkRef false
-  let providerExhausted : LLMClient.Provider :=
+  let providerExhausted : LLMClient.Provider IO :=
     { name := "fake"
       sendRequest := fun _ _ =>
         exhaustedProviderCalled.set true *>
           pure (.ok ({ text := "hello", toolCalls := #[] } : LLMClient.Reply)) }
   let resultExhausted ←
     LLMClient.converseLoop providerExhausted #[] #[LLMClient.Msg.user "hi"]
-      ({ maxIterations := 0 } : LLMClient.LoopConfig)
+      ({ maxIterations := 0 } : LLMClient.LoopConfig IO)
   let giveUpText := "The model kept calling tools without finishing; giving up."
   let r := r.check "converseLoop: maxIterations := 0 gives up as .ok with the giving-up message"
     (match resultExhausted with
@@ -426,7 +426,7 @@ def testConverseLoop (r : Results) : IO Results := do
   -- A provider that always requests a tool call runs to the iteration budget, then gives up
   -- with .ok, preserving every round's real tool call/result plus the giving-up message.
   let alwaysToolCallCount ← IO.mkRef (0 : Nat)
-  let providerAlwaysToolCall : LLMClient.Provider :=
+  let providerAlwaysToolCall : LLMClient.Provider IO :=
     { name := "fake"
       sendRequest := fun _ _ => do
         let n ← alwaysToolCallCount.get
@@ -439,7 +439,7 @@ def testConverseLoop (r : Results) : IO Results := do
   let maxIters := 2
   let resultBudget ←
     LLMClient.converseLoop providerAlwaysToolCall toolsAlways #[LLMClient.Msg.user "weather?"]
-      ({ maxIterations := maxIters } : LLMClient.LoopConfig)
+      ({ maxIterations := maxIters } : LLMClient.LoopConfig IO)
   let firstToolCall : LLMClient.ToolCall := { id := "call_0", name := "get_weather", input := Json.mkObj [("city", "Paris")] }
   let r := r.check "converseLoop: exhausting a real tool-call budget returns .ok"
     (match resultBudget with | .ok _ => true | .error _ => false)
@@ -468,7 +468,7 @@ def testConverseLoop (r : Results) : IO Results := do
     (runToolAlwaysCalled == maxIters)
 
   -- provider.sendRequest failing outright is the one remaining .error case.
-  let providerError : LLMClient.Provider :=
+  let providerError : LLMClient.Provider IO :=
     { name := "fake"
       sendRequest := fun _ _ => pure (.error "boom") }
   let resultError ← LLMClient.converseLoop providerError #[] #[LLMClient.Msg.user "hi"]
@@ -485,7 +485,7 @@ def testConverseLoop (r : Results) : IO Results := do
   -- calls have already changed whatever they change, and a caller that persists conversations has
   -- to be able to record that rather than lose it along with the error.
   let lateCount ← IO.mkRef (0 : Nat)
-  let providerLateError : LLMClient.Provider :=
+  let providerLateError : LLMClient.Provider IO :=
     { name := "fake"
       sendRequest := fun _ _ => do
         let n ← lateCount.get
@@ -751,7 +751,7 @@ structure SentRequest where
 
 /-- A transport that records what it was asked to send and answers with `reply`. -/
 def recordingTransport (sent : IO.Ref (Option SentRequest))
-    (reply : Except String LLMClient.HttpResponse) : LLMClient.Transport :=
+    (reply : Except String LLMClient.HttpResponse) : LLMClient.Transport IO :=
   fun url body headers => do
     sent.set (some { url, body, headers })
     pure reply
@@ -774,8 +774,7 @@ def testTransport (r : Results) : IO Results := do
   let sent ← IO.mkRef none
   let claudeReply := Json.mkObj
     [("content", Json.arr #[Json.mkObj [("type", "text"), ("text", "hello")]])]
-  let claude :=
-    LLMClient.Claude.provider "key-1" (transport := recordingTransport sent (ok200 claudeReply))
+  let claude := LLMClient.Claude.providerWith (recordingTransport sent (ok200 claudeReply)) "key-1"
   let result ← claude.sendRequest sampleHistory
   let s ← sent.get
   let r := r
@@ -791,10 +790,10 @@ def testTransport (r : Results) : IO Results := do
 
   let errorBody := Json.mkObj [("error", Json.mkObj [("message", "model not found")])]
   let notFound := Except.ok { status := 404, body := errorBody.compress.toUTF8 }
-  let rejected ← (LLMClient.Claude.provider "key-1"
-    (transport := recordingTransport sent notFound)).sendRequest sampleHistory
-  let failed ← (LLMClient.Claude.provider "key-1"
-    (transport := recordingTransport sent (.error "connection refused"))).sendRequest sampleHistory
+  let rejected ← (LLMClient.Claude.providerWith (recordingTransport sent notFound)
+    "key-1").sendRequest sampleHistory
+  let refused := recordingTransport sent (.error "connection refused")
+  let failed ← (LLMClient.Claude.providerWith refused "key-1").sendRequest sampleHistory
   let r := r
     |>.check "Claude: an error status reports the API's own message"
       (isErrorMentioning rejected "model not found")
@@ -803,8 +802,7 @@ def testTransport (r : Results) : IO Results := do
 
   let openaiReply := Json.mkObj
     [("choices", Json.arr #[Json.mkObj [("message", Json.mkObj [("content", "hello")])]])]
-  let openai :=
-    LLMClient.OpenAI.provider "key-2" (transport := recordingTransport sent (ok200 openaiReply))
+  let openai := LLMClient.OpenAI.providerWith (recordingTransport sent (ok200 openaiReply)) "key-2"
   let result ← openai.sendRequest sampleHistory
   let s ← sent.get
   let r := r
@@ -823,9 +821,8 @@ def testTransport (r : Results) : IO Results := do
   let config := LLMClient.Bedrock.defaultConfig "eu-west-2"
   let bedrockMessage := Json.mkObj [("content", Json.arr #[Json.mkObj [("text", "hello")]])]
   let bedrockReply := Json.mkObj [("output", Json.mkObj [("message", bedrockMessage)])]
-  let bedrock := LLMClient.Bedrock.provider creds config
-    (transport := recordingTransport sent (ok200 bedrockReply))
-    (clock := pure { epochSeconds := 1440938160 })
+  let bedrock := LLMClient.Bedrock.providerWith (recordingTransport sent (ok200 bedrockReply))
+    (pure { epochSeconds := 1440938160 }) creds config
   let result ← bedrock.sendRequest sampleHistory
   let s ← sent.get
   let r := r
@@ -843,6 +840,19 @@ def testTransport (r : Results) : IO Results := do
       (match result with | .ok reply => reply.text == "hello" | .error _ => false)
   return r
 
+/-- Nothing below `converseLoop` may reach for `IO`, or a caller in another monad (`Async` in a
+browser) could not use it. Running the whole stack in `Id` makes any such dependency a type error
+in this file, and the checks confirm the stack still does its job there. -/
+def testPureMonad (r : Results) : Results :=
+  let reply := Json.mkObj
+    [("content", Json.arr #[Json.mkObj [("type", "text"), ("text", "hello")]])]
+  let transport : LLMClient.Transport Id := fun _ _ _ =>
+    .ok { status := 200, body := reply.compress.toUTF8 }
+  let result := Id.run <|
+    LLMClient.converseLoop (LLMClient.Claude.providerWith transport "key") #[] sampleHistory
+  r.check "converseLoop runs over a provider in a monad other than IO"
+    (match result with | .ok (_, text) => text == "hello" | .error _ => false)
+
 def runAll : IO Results := do
   let r : Results := {}
   let r := testOpenAI r
@@ -855,6 +865,7 @@ def runAll : IO Results := do
   let r := testToolResultError r
   let r := testStructuredResult r
   let r ← testTransport r
+  let r := testPureMonad r
   testConverseLoop r
 
 def main : IO UInt32 := do

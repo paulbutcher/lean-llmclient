@@ -2,7 +2,8 @@
 
 ## [Unreleased]
 
-- Providers take an optional `transport` for the HTTP POST, defaulting to `Curl.transport`.
+- Each provider has a `providerWith` that takes the `Transport` to post with; `provider` posts with curl as before.
+- Breaking: `Provider`, `ToolImpl`, `LoopConfig` and `Transport` take the monad they run in, and `converseLoop` works in any `Monad`, so the library can run in `Async`.
 - Breaking: each provider's `sendRequest` takes the transport first, and Bedrock's then the clock it signs with.
 - Each provider exposes a pure `parseReply`, proved to succeed only on a 2xx status.
 

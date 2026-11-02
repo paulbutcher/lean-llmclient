@@ -116,9 +116,9 @@ def parseReply (status : UInt32) (body : ByteArray) : Except String LLMClient.Re
         .error s!"OpenAI API error ({status}): {errorMessageOf json}"
 
 /-- Posts one Chat Completions request with the given history; does not loop for tool use. -/
-def sendRequest (transport : LLMClient.Transport) (config : LLMClient.Config) (apiKey : String)
-    (history : Array LLMClient.Msg) (tools : Array LLMClient.Tool := #[]) :
-    IO (Except String LLMClient.Reply) := do
+def sendRequest [Monad m] (transport : LLMClient.Transport m) (config : LLMClient.Config)
+    (apiKey : String) (history : Array LLMClient.Msg) (tools : Array LLMClient.Tool := #[]) :
+    m (Except String LLMClient.Reply) := do
   let body := requestBody config history tools
   let headers :=
     [ ("authorization", s!"Bearer {apiKey}"),
@@ -127,9 +127,13 @@ def sendRequest (transport : LLMClient.Transport) (config : LLMClient.Config) (a
   | .error e => return .error s!"request to the OpenAI API failed: {e}"
   | .ok resp => return parseReply resp.status resp.body
 
-def provider (apiKey : String) (config : LLMClient.Config := defaultConfig)
-    (transport : LLMClient.Transport := Curl.transport) : LLMClient.Provider :=
+def providerWith [Monad m] (transport : LLMClient.Transport m) (apiKey : String)
+    (config : LLMClient.Config := defaultConfig) : LLMClient.Provider m :=
   { name := "openai"
     sendRequest := fun history tools => sendRequest transport config apiKey history tools }
+
+def provider (apiKey : String) (config : LLMClient.Config := defaultConfig) :
+    LLMClient.Provider IO :=
+  providerWith Curl.transport apiKey config
 
 end LLMClient.OpenAI

@@ -32,7 +32,7 @@ def main : IO Unit := do
   | .error msg => IO.eprintln s!"request failed: {msg}"
 ```
 
-Swap `Claude.provider` for `OpenAI.provider` to talk to OpenAI instead; both take the API key first and then an optional `Config` (`apiUrl`, `model`, `maxOutputTokens`, `systemPrompt`) if you want to override the defaults. `systemPrompt` is sent as a top-level `system` field by Claude and as a leading `developer` message by OpenAI; leave it `none` to omit it from the request entirely. `Bedrock.provider creds (Bedrock.defaultConfig region)` reaches everything Amazon Bedrock hosts through its Converse API, chosen with `Config.model`; it signs with SigV4, so it takes AWS credentials in place of an API key, and its `Config` carries `region` rather than `apiUrl`. `Bedrock.credentialsFromEnv` and `Bedrock.regionFromEnv` read the usual `AWS_*` variables. Every provider also takes an optional `transport`, the function that performs the HTTP POST, which defaults to `Curl.transport`; pass your own to use another HTTP client or to test without a network.
+Swap `Claude.provider` for `OpenAI.provider` to talk to OpenAI instead; both take the API key first and then an optional `Config` (`apiUrl`, `model`, `maxOutputTokens`, `systemPrompt`) if you want to override the defaults. `systemPrompt` is sent as a top-level `system` field by Claude and as a leading `developer` message by OpenAI; leave it `none` to omit it from the request entirely. `Bedrock.provider creds (Bedrock.defaultConfig region)` reaches everything Amazon Bedrock hosts through its Converse API, chosen with `Config.model`; it signs with SigV4, so it takes AWS credentials in place of an API key, and its `Config` carries `region` rather than `apiUrl`. `Bedrock.credentialsFromEnv` and `Bedrock.regionFromEnv` read the usual `AWS_*` variables. Each `provider` is a `Provider IO` that posts with curl. `Claude.providerWith`, `OpenAI.providerWith` and `Bedrock.providerWith` take the `Transport` to post with instead, and build a `Provider m` for whatever monad it runs in; `ToolImpl m`, `LoopConfig m` and `converseLoop` follow it. That is how the library runs where curl is unavailable or blocking is not allowed, such as `Async` in a browser, and how to test without a network. Bedrock's also takes the clock it signs with.
 
 `tools` defaults to `#[]`, so it can be left off when you're not offering any (as above).
 
@@ -67,7 +67,7 @@ match ← provider.sendRequest history #[getWeather] with
 The `Tools` example above shows a single round trip. Most tool-using conversations need several: send the result of each tool call back to the model and keep going until it stops asking for tools. `converseLoop` runs that exchange for you, in place of writing the loop yourself:
 
 ```lean
-def getWeatherImpl : ToolImpl :=
+def getWeatherImpl : ToolImpl IO :=
   { tool := getWeather
     run := fun input =>
       let city := (input.getObjVal? "city" >>= Json.getStr?).toOption.getD ""
@@ -76,7 +76,7 @@ def getWeatherImpl : ToolImpl :=
       else
         pure (.ok s!"15°C, cloudy in {city}") } -- however you actually look this up
 
-let config : LoopConfig :=
+let config : LoopConfig IO :=
   { onProgress := fun
       | .thinking => IO.println "model is thinking..."
       | .runningTool name => IO.println s!"running tool: {name}" }

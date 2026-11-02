@@ -18,9 +18,9 @@ inductive Progress where
 
 /-- Tuning knobs for `converseLoop`. `onProgress` defaults to a no-op, so existing call sites
 that don't care about progress don't need to change. -/
-structure LoopConfig where
+structure LoopConfig (m : Type → Type) [Pure m] where
   maxIterations : Nat := 5
-  onProgress : Progress → IO Unit := fun _ => pure ()
+  onProgress : Progress → m Unit := fun _ => pure ()
 
 /-- A request that failed, and everything the conversation had accumulated by then.
 
@@ -43,8 +43,8 @@ is nothing to pass it to. `.runningTool` is not reported for it, because nothing
 A tool offering `runStructured` is run through that alone, and the string half of the result is
 its JSON compressed, so what the providers that can only carry a string send is the same answer as
 what Converse sends as JSON. -/
-private def runCall (tools : Array ToolImpl) (onProgress : Progress → IO Unit) (tc : ToolCall) :
-    IO (Except String (String × Option Json)) :=
+private def runCall [Monad m] (tools : Array (ToolImpl m)) (onProgress : Progress → m Unit)
+    (tc : ToolCall) : m (Except String (String × Option Json)) :=
   match tools.find? (·.tool.name == tc.name) with
   | some impl => do
     onProgress (.runningTool tc.name)
@@ -53,9 +53,9 @@ private def runCall (tools : Array ToolImpl) (onProgress : Progress → IO Unit)
     | none => return (← impl.run tc.input).map fun output => (output, none)
   | none => pure (.error s!"there is no tool called {tc.name}")
 
-private def go (provider : Provider) (tools : Array ToolImpl) (onProgress : Progress → IO Unit)
-    (history : Array Msg) (iterationsLeft : Nat) :
-    IO (Except LoopFailure (Array Msg × String)) := do
+private def go [Monad m] (provider : Provider m) (tools : Array (ToolImpl m))
+    (onProgress : Progress → m Unit) (history : Array Msg) (iterationsLeft : Nat) :
+    m (Except LoopFailure (Array Msg × String)) := do
   if iterationsLeft == 0 then
     let text := "The model kept calling tools without finishing; giving up."
     return .ok (history.push (Msg.assistant text), text)
@@ -99,8 +99,9 @@ fills in both halves of the `.toolResult`.
 returned as `.ok (history, text)`, since real conversation happened and `history` is worth
 keeping; `.error` is `provider.sendRequest` itself failing, and carries the history too, for the
 reason `LoopFailure` gives. -/
-def converseLoop (provider : Provider) (tools : Array ToolImpl) (history : Array Msg)
-    (config : LoopConfig := {}) : IO (Except LoopFailure (Array Msg × String)) :=
+def converseLoop [Monad m] (provider : Provider m) (tools : Array (ToolImpl m))
+    (history : Array Msg) (config : LoopConfig m := {}) :
+    m (Except LoopFailure (Array Msg × String)) :=
   go provider tools config.onProgress history config.maxIterations
 
 end LLMClient
