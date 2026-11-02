@@ -4,7 +4,7 @@
 module
 
 public import Json
-import Leancurl
+public import LLMClient.Curl
 import Std.Time
 public import Aws
 public import LLMClient.Provider
@@ -12,8 +12,6 @@ public import LLMClient.Provider
 public section
 
 namespace LLMClient.Bedrock
-
-open Leancurl
 
 /-- Bedrock does not reuse `LLMClient.Config`: the endpoint is wholly determined by the region,
 and signing needs the region as a field of its own. An `apiUrl` alongside it would be a second
@@ -164,49 +162,53 @@ def currentTimestamp : IO Aws.Sigv4.Timestamp := do
   let now ← Std.Time.Timestamp.now
   return { epochSeconds := now.toSecondsSinceUnixEpoch.toInt.toNat }
 
-/-- `signed.headers` is the complete set curl should send: the signer returns the caller's own
-headers alongside the ones it owns, minus `host`, which curl derives from the URL. -/
-private def signedPost (creds : Aws.Sigv4.Credentials) (config : Config) (body : ByteArray) :
-    IO (Except CurlError Response) := do
-  let t ← currentTimestamp
-  let signed := Aws.Sigv4.sign creds { region := config.region, service := "bedrock" } t
+/-- Reads one Converse response. Pure, so that what a status and body mean is settled here and the
+transport carrying them decides nothing. -/
+def parseReply (status : UInt32) (body : ByteArray) : Except String LLMClient.Reply :=
+  match String.fromUTF8? body with
+  | none => .error "the Bedrock API returned a response that wasn't valid UTF-8"
+  | some text =>
+    match Json.parse text with
+    | .error e => .error s!"couldn't parse the Bedrock API response: {e}"
+    | .ok json =>
+      if status >= 200 && status < 300 then
+        let content := contentOf json
+        .ok
+          { text := extractText content,
+            toolCalls := extractToolCalls content,
+            isRefusal :=
+              stopReasonOf json == "content_filtered" ||
+                stopReasonOf json == "guardrail_intervened",
+            isTruncated := stopReasonOf json == "max_tokens" }
+      else
+        .error s!"Bedrock API error ({status}): {errorMessageOf json}"
+
+/-- Posts one Converse request with the given history; does not loop for tool use. `clock` gives
+the time the request is signed at.
+
+`signed.headers` is the complete set to send: the signer returns the caller's own headers
+alongside the ones it owns, minus `host`, which the transport derives from the URL. -/
+def sendRequest (transport : LLMClient.Transport) (clock : IO Aws.Sigv4.Timestamp)
+    (config : Config) (creds : Aws.Sigv4.Credentials) (history : Array LLMClient.Msg)
+    (tools : Array LLMClient.Tool := #[]) : IO (Except String LLMClient.Reply) := do
+  let body := (requestBody config history tools).compress.toUTF8
+  let signed := Aws.Sigv4.sign creds { region := config.region, service := "bedrock" } (← clock)
     { method := "POST",
       path := path config,
       host := host config,
       headers := [("content-type", "application/json")],
       body }
-  Curl.post s!"https://{host config}{path config}" body signed.headers
-
-/-- Posts one Converse request with the given history; does not loop for tool use. -/
-def sendRequest (config : Config) (creds : Aws.Sigv4.Credentials)
-    (history : Array LLMClient.Msg) (tools : Array LLMClient.Tool := #[]) :
-    IO (Except String LLMClient.Reply) := do
-  let body := requestBody config history tools
-  match ← signedPost creds config body.compress.toUTF8 with
-  | .error e => return .error s!"request to the Bedrock API failed: {e.message}"
-  | .ok resp =>
-    match String.fromUTF8? resp.body with
-    | none => return .error "the Bedrock API returned a response that wasn't valid UTF-8"
-    | some text =>
-      match Json.parse text with
-      | .error e => return .error s!"couldn't parse the Bedrock API response: {e}"
-      | .ok json =>
-        if resp.status >= 200 && resp.status < 300 then
-          let content := contentOf json
-          return .ok
-            { text := extractText content,
-              toolCalls := extractToolCalls content,
-              isRefusal :=
-                stopReasonOf json == "content_filtered" ||
-                  stopReasonOf json == "guardrail_intervened",
-              isTruncated := stopReasonOf json == "max_tokens" }
-        else
-          return .error s!"Bedrock API error ({resp.status}): {errorMessageOf json}"
+  match ← transport s!"https://{host config}{path config}" body signed.headers with
+  | .error e => return .error s!"request to the Bedrock API failed: {e}"
+  | .ok resp => return parseReply resp.status resp.body
 
 /-- Build the provider from freshly resolved credentials each time a request is served rather
 than once at start-up; the temporary credentials an execution role issues are rotated underneath
 a long-lived process. -/
-def provider (creds : Aws.Sigv4.Credentials) (config : Config) : LLMClient.Provider :=
-  { name := "bedrock", sendRequest := fun history tools => sendRequest config creds history tools }
+def provider (creds : Aws.Sigv4.Credentials) (config : Config)
+    (transport : LLMClient.Transport := Curl.transport)
+    (clock : IO Aws.Sigv4.Timestamp := currentTimestamp) : LLMClient.Provider :=
+  { name := "bedrock"
+    sendRequest := fun history tools => sendRequest transport clock config creds history tools }
 
 end LLMClient.Bedrock

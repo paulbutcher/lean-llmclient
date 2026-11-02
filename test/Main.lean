@@ -744,6 +744,105 @@ def testBedrockRequestBody (r : Results) : Results :=
     |>.check "host is derived from the region"
       (host cfgNone == "bedrock-runtime.us-east-1.amazonaws.com")
 
+structure SentRequest where
+  url : String
+  body : ByteArray
+  headers : List (String × String)
+
+/-- A transport that records what it was asked to send and answers with `reply`. -/
+def recordingTransport (sent : IO.Ref (Option SentRequest))
+    (reply : Except String LLMClient.HttpResponse) : LLMClient.Transport :=
+  fun url body headers => do
+    sent.set (some { url, body, headers })
+    pure reply
+
+def header (s : Option SentRequest) (name : String) : Option String :=
+  s.bind fun s => s.headers.lookup name
+
+def sentJson (s : Option SentRequest) : Option Json :=
+  s.bind fun s => String.fromUTF8? s.body |>.bind fun t => (Json.parse t).toOption
+
+def ok200 (body : Json) : Except String LLMClient.HttpResponse :=
+  .ok { status := 200, body := body.compress.toUTF8 }
+
+def isErrorMentioning (result : Except String LLMClient.Reply) (needle : String) : Bool :=
+  match result with
+  | .error e => mentions e needle
+  | .ok _ => false
+
+def testTransport (r : Results) : IO Results := do
+  let sent ← IO.mkRef none
+  let claudeReply := Json.mkObj
+    [("content", Json.arr #[Json.mkObj [("type", "text"), ("text", "hello")]])]
+  let claude :=
+    LLMClient.Claude.provider "key-1" (transport := recordingTransport sent (ok200 claudeReply))
+  let result ← claude.sendRequest sampleHistory
+  let s ← sent.get
+  let r := r
+    |>.check "Claude: posts to the configured URL"
+      (s.map (·.url) == some LLMClient.Claude.defaultConfig.apiUrl)
+    |>.check "Claude: sends the API key"
+      (header s "x-api-key" == some "key-1")
+    |>.check "Claude: sends the request body for the history"
+      (sentJson s ==
+        some (LLMClient.Claude.requestBody LLMClient.Claude.defaultConfig sampleHistory))
+    |>.check "Claude: reads the reply out of the transport's response"
+      (match result with | .ok reply => reply.text == "hello" | .error _ => false)
+
+  let errorBody := Json.mkObj [("error", Json.mkObj [("message", "model not found")])]
+  let notFound := Except.ok { status := 404, body := errorBody.compress.toUTF8 }
+  let rejected ← (LLMClient.Claude.provider "key-1"
+    (transport := recordingTransport sent notFound)).sendRequest sampleHistory
+  let failed ← (LLMClient.Claude.provider "key-1"
+    (transport := recordingTransport sent (.error "connection refused"))).sendRequest sampleHistory
+  let r := r
+    |>.check "Claude: an error status reports the API's own message"
+      (isErrorMentioning rejected "model not found")
+    |>.check "Claude: a transport failure reports the transport's message"
+      (isErrorMentioning failed "connection refused")
+
+  let openaiReply := Json.mkObj
+    [("choices", Json.arr #[Json.mkObj [("message", Json.mkObj [("content", "hello")])]])]
+  let openai :=
+    LLMClient.OpenAI.provider "key-2" (transport := recordingTransport sent (ok200 openaiReply))
+  let result ← openai.sendRequest sampleHistory
+  let s ← sent.get
+  let r := r
+    |>.check "OpenAI: posts to the configured URL"
+      (s.map (·.url) == some LLMClient.OpenAI.defaultConfig.apiUrl)
+    |>.check "OpenAI: sends the API key as a bearer token"
+      (header s "authorization" == some "Bearer key-2")
+    |>.check "OpenAI: sends the request body for the history"
+      (sentJson s ==
+        some (LLMClient.OpenAI.requestBody LLMClient.OpenAI.defaultConfig sampleHistory))
+    |>.check "OpenAI: reads the reply out of the transport's response"
+      (match result with | .ok reply => reply.text == "hello" | .error _ => false)
+
+  let creds : Aws.Sigv4.Credentials :=
+    { accessKeyId := "AKIDEXAMPLE", secretAccessKey := "secret", sessionToken := none }
+  let config := LLMClient.Bedrock.defaultConfig "eu-west-2"
+  let bedrockMessage := Json.mkObj [("content", Json.arr #[Json.mkObj [("text", "hello")]])]
+  let bedrockReply := Json.mkObj [("output", Json.mkObj [("message", bedrockMessage)])]
+  let bedrock := LLMClient.Bedrock.provider creds config
+    (transport := recordingTransport sent (ok200 bedrockReply))
+    (clock := pure { epochSeconds := 1440938160 })
+  let result ← bedrock.sendRequest sampleHistory
+  let s ← sent.get
+  let r := r
+    |>.check "Bedrock: posts to the regional Converse endpoint for the model"
+      (s.map (·.url) ==
+        some s!"https://bedrock-runtime.eu-west-2.amazonaws.com/model/{config.model}/converse")
+    |>.check "Bedrock: signs at the time the clock gives"
+      (header s "x-amz-date" == some "20150830T123600Z")
+    |>.check "Bedrock: signs with the given credentials"
+      ((header s "Authorization").any
+        (mentions · "Credential=AKIDEXAMPLE/20150830/eu-west-2/bedrock/"))
+    |>.check "Bedrock: sends the request body for the history"
+      (sentJson s == some (LLMClient.Bedrock.requestBody config sampleHistory))
+    |>.check "Bedrock: reads the reply out of the transport's response"
+      (match result with | .ok reply => reply.text == "hello" | .error _ => false)
+  return r
+
 def runAll : IO Results := do
   let r : Results := {}
   let r := testOpenAI r
@@ -755,6 +854,7 @@ def runAll : IO Results := do
   let r := testToolResultBatching r
   let r := testToolResultError r
   let r := testStructuredResult r
+  let r ← testTransport r
   testConverseLoop r
 
 def main : IO UInt32 := do

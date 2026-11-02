@@ -367,4 +367,63 @@ theorem bedrock_requestBody_toolConfig (config : Bedrock.Config) (history : Arra
   simp only [Bedrock.requestBody]
   cases config.systemPrompt <;> split <;> rename_i h <;> simp only [h] <;> rfl
 
+/-- A Messages API response is read as a reply only when its status says the request succeeded.
+An error response still has a JSON body, often one that `contentOf` and friends read as an empty
+reply without complaint, so without this a rejected request would reach the caller as a model
+that said nothing.
+
+`status` and `body` are whatever the transport handed back, with no constraint on either. The
+hypothesis is that `Claude.parseReply` answered `.ok` with some reply `r`; the conclusion is that
+`status` lies in the 2xx range. Read contrapositively, every other status yields `.error`, whatever
+the body holds. -/
+theorem claude_parseReply_ok_only_2xx (status : UInt32) (body : ByteArray) (r : Reply)
+    (h : Claude.parseReply status body = .ok r) : status ≥ 200 ∧ status < 300 := by
+  unfold Claude.parseReply at h
+  split at h
+  · cases h
+  · split at h
+    · cases h
+    · split at h
+      · simp_all
+      · cases h
+
+/-- A Chat Completions response is read as a reply only when its status says the request
+succeeded. An error body has no `choices`, which `messageOf` reads as an empty message without
+complaint, so without this a rejected request would reach the caller as a model that said nothing.
+
+`status` and `body` are whatever the transport handed back, with no constraint on either. The
+hypothesis is that `OpenAI.parseReply` answered `.ok` with some reply `r`; the conclusion is that
+`status` lies in the 2xx range. Read contrapositively, every other status yields `.error`, whatever
+the body holds. -/
+theorem openai_parseReply_ok_only_2xx (status : UInt32) (body : ByteArray) (r : Reply)
+    (h : OpenAI.parseReply status body = .ok r) : status ≥ 200 ∧ status < 300 := by
+  unfold OpenAI.parseReply at h
+  split at h
+  · cases h
+  · split at h
+    · cases h
+    · split at h
+      · simp_all
+      · cases h
+
+/-- A Converse response is read as a reply only when its status says the request succeeded. An
+error body has no `output`, which `contentOf` reads as no content blocks without complaint, so
+without this a rejected request, a failed signature included, would reach the caller as a model
+that said nothing.
+
+`status` and `body` are whatever the transport handed back, with no constraint on either. The
+hypothesis is that `Bedrock.parseReply` answered `.ok` with some reply `r`; the conclusion is that
+`status` lies in the 2xx range. Read contrapositively, every other status yields `.error`, whatever
+the body holds. -/
+theorem bedrock_parseReply_ok_only_2xx (status : UInt32) (body : ByteArray) (r : Reply)
+    (h : Bedrock.parseReply status body = .ok r) : status ≥ 200 ∧ status < 300 := by
+  unfold Bedrock.parseReply at h
+  split at h
+  · cases h
+  · split at h
+    · cases h
+    · split at h
+      · simp_all
+      · cases h
+
 end LLMClient.Test

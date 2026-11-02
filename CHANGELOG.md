@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased]
+
+- Providers take an optional `transport` for the HTTP POST, defaulting to `Curl.transport`.
+- Breaking: each provider's `sendRequest` takes the transport first, and Bedrock's then the clock it signs with.
+- Each provider exposes a pure `parseReply`, proved to succeed only on a 2xx status.
+
 ## [0.9.4] - 2026-10-20
 
 - Chore: bump dependencies.

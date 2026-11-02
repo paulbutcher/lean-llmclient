@@ -68,6 +68,17 @@ structure Config where
   from the request entirely when `none`, rather than sent as an empty or null value. -/
   systemPrompt : Option String := none
 
+structure HttpResponse where
+  status : UInt32
+  body : ByteArray
+
+/-- Posts `body` to `url` with `headers`, the one HTTP operation every provider needs, so that
+which HTTP client carries it is the caller's choice. `.error` means no response arrived at all; a
+response with an error status is still `.ok`, since its body says what went wrong. -/
+abbrev Transport :=
+  (url : String) → (body : ByteArray) → (headers : List (String × String)) →
+    IO (Except String HttpResponse)
+
 /-- A backend capable of driving one request/response round trip against an LLM API.
 
 Credentials are supplied when a provider is constructed rather than on each call, because what

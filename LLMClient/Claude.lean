@@ -4,14 +4,12 @@
 module
 
 public import Json
-import Leancurl
+public import LLMClient.Curl
 public import LLMClient.Provider
 
 public section
 
 namespace LLMClient.Claude
-
-open Leancurl
 
 def defaultConfig : LLMClient.Config :=
   { apiUrl := "https://api.anthropic.com/v1/messages", model := "claude-opus-5" }
@@ -113,34 +111,41 @@ def requestBody (config : LLMClient.Config) (history : Array LLMClient.Msg)
     | some s => fields ++ [("system", Json.str s)]
     | none => fields)
 
+/-- Reads one Messages API response. Pure, so that what a status and body mean is settled here
+and the transport carrying them decides nothing. -/
+def parseReply (status : UInt32) (body : ByteArray) : Except String LLMClient.Reply :=
+  match String.fromUTF8? body with
+  | none => .error "the Claude API returned a response that wasn't valid UTF-8"
+  | some text =>
+    match Json.parse text with
+    | .error e => .error s!"couldn't parse the Claude API response: {e}"
+    | .ok json =>
+      if status >= 200 && status < 300 then
+        let content := contentOf json
+        .ok
+          { text := extractText content,
+            toolCalls := extractToolCalls content,
+            isRefusal := stopReasonOf json == "refusal",
+            isTruncated := stopReasonOf json == "max_tokens" }
+      else
+        .error s!"Claude API error ({status}): {errorMessageOf json}"
+
 /-- Posts one Messages API request with the given history; does not loop for tool use. -/
-def sendRequest (config : LLMClient.Config) (apiKey : String) (history : Array LLMClient.Msg)
-    (tools : Array LLMClient.Tool := #[]) : IO (Except String LLMClient.Reply) := do
+def sendRequest (transport : LLMClient.Transport) (config : LLMClient.Config) (apiKey : String)
+    (history : Array LLMClient.Msg) (tools : Array LLMClient.Tool := #[]) :
+    IO (Except String LLMClient.Reply) := do
   let body := requestBody config history tools
-  let headers : Headers :=
+  let headers :=
     [ ("x-api-key", apiKey),
       ("anthropic-version", "2023-06-01"),
       ("content-type", "application/json") ]
-  match ← Curl.post config.apiUrl body.compress.toUTF8 headers with
-  | .error e => return .error s!"request to the Claude API failed: {e.message}"
-  | .ok resp =>
-    match String.fromUTF8? resp.body with
-    | none => return .error "the Claude API returned a response that wasn't valid UTF-8"
-    | some text =>
-      match Json.parse text with
-      | .error e => return .error s!"couldn't parse the Claude API response: {e}"
-      | .ok json =>
-        if resp.status >= 200 && resp.status < 300 then
-          let content := contentOf json
-          return .ok
-            { text := extractText content,
-              toolCalls := extractToolCalls content,
-              isRefusal := stopReasonOf json == "refusal",
-              isTruncated := stopReasonOf json == "max_tokens" }
-        else
-          return .error s!"Claude API error ({resp.status}): {errorMessageOf json}"
+  match ← transport config.apiUrl body.compress.toUTF8 headers with
+  | .error e => return .error s!"request to the Claude API failed: {e}"
+  | .ok resp => return parseReply resp.status resp.body
 
-def provider (apiKey : String) (config : LLMClient.Config := defaultConfig) : LLMClient.Provider :=
-  { name := "claude", sendRequest := fun history tools => sendRequest config apiKey history tools }
+def provider (apiKey : String) (config : LLMClient.Config := defaultConfig)
+    (transport : LLMClient.Transport := Curl.transport) : LLMClient.Provider :=
+  { name := "claude"
+    sendRequest := fun history tools => sendRequest transport config apiKey history tools }
 
 end LLMClient.Claude
