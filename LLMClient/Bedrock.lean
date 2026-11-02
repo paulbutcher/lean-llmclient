@@ -4,7 +4,6 @@
 module
 
 public import Json
-public import LLMClient.Curl
 import Std.Time
 public import Aws
 public import LLMClient.Provider
@@ -209,8 +208,5 @@ def providerWith [Monad m] (transport : LLMClient.Transport m) (clock : m Aws.Si
     (creds : Aws.Sigv4.Credentials) (config : Config) : LLMClient.Provider m :=
   { name := "bedrock"
     sendRequest := fun history tools => sendRequest transport clock config creds history tools }
-
-def provider (creds : Aws.Sigv4.Credentials) (config : Config) : LLMClient.Provider IO :=
-  providerWith Curl.transport currentTimestamp creds config
 
 end LLMClient.Bedrock

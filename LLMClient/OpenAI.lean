@@ -4,7 +4,6 @@
 module
 
 public import Json
-public import LLMClient.Curl
 public import LLMClient.Provider
 
 public section
@@ -131,9 +130,5 @@ def providerWith [Monad m] (transport : LLMClient.Transport m) (apiKey : String)
     (config : LLMClient.Config := defaultConfig) : LLMClient.Provider m :=
   { name := "openai"
     sendRequest := fun history tools => sendRequest transport config apiKey history tools }
-
-def provider (apiKey : String) (config : LLMClient.Config := defaultConfig) :
-    LLMClient.Provider IO :=
-  providerWith Curl.transport apiKey config
 
 end LLMClient.OpenAI

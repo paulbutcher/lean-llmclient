@@ -13,7 +13,7 @@ git = "https://github.com/paulbutcher/lean-llmclient"
 rev = "main"
 ```
 
-`LLMClient` depends on [`leancurl`](https://github.com/paulbutcher/leancurl) for HTTP, which compiles a small C shim against `libcurl`. Building anything that depends on `LLMClient` therefore needs `pkg-config`, `libcurl` development headers, and a C compiler available (e.g. on Debian/Ubuntu, `pkg-config` and `libcurl4-openssl-dev`). It also depends on [`lean-json`](https://github.com/paulbutcher/lean-json) for the `Json` type that `Tool.schema`, `ToolCall.input` and `ToolImpl.run` are written in, and on [`lean-aws`](https://github.com/paulbutcher/lean-aws) and, through it, [`leancrypto`](https://github.com/paulbutcher/leancrypto) for request signing; those three are pure Lean and add no build requirements of their own.
+`LLMClient` depends on [`leancurl`](https://github.com/paulbutcher/leancurl) for HTTP, which compiles a small C shim against `libcurl`. Building anything that imports `LLMClient` or `LLMClient.Curl` therefore needs `pkg-config`, `libcurl` development headers, and a C compiler available (e.g. on Debian/Ubuntu, `pkg-config` and `libcurl4-openssl-dev`); importing only `LLMClient.Core` needs none of them. It also depends on [`lean-json`](https://github.com/paulbutcher/lean-json) for the `Json` type that `Tool.schema`, `ToolCall.input` and `ToolImpl.run` are written in, and on [`lean-aws`](https://github.com/paulbutcher/lean-aws) and, through it, [`leancrypto`](https://github.com/paulbutcher/leancrypto) for request signing; those three are pure Lean and add no build requirements of their own.
 
 ## Usage
 
@@ -32,7 +32,7 @@ def main : IO Unit := do
   | .error msg => IO.eprintln s!"request failed: {msg}"
 ```
 
-Swap `Claude.provider` for `OpenAI.provider` to talk to OpenAI instead; both take the API key first and then an optional `Config` (`apiUrl`, `model`, `maxOutputTokens`, `systemPrompt`) if you want to override the defaults. `systemPrompt` is sent as a top-level `system` field by Claude and as a leading `developer` message by OpenAI; leave it `none` to omit it from the request entirely. `Bedrock.provider creds (Bedrock.defaultConfig region)` reaches everything Amazon Bedrock hosts through its Converse API, chosen with `Config.model`; it signs with SigV4, so it takes AWS credentials in place of an API key, and its `Config` carries `region` rather than `apiUrl`. `Bedrock.credentialsFromEnv` and `Bedrock.regionFromEnv` read the usual `AWS_*` variables. Each `provider` is a `Provider IO` that posts with curl. `Claude.providerWith`, `OpenAI.providerWith` and `Bedrock.providerWith` take the `Transport` to post with instead, and build a `Provider m` for whatever monad it runs in; `ToolImpl m`, `LoopConfig m` and `converseLoop` follow it. That is how the library runs where curl is unavailable or blocking is not allowed, such as `Async` in a browser, and how to test without a network. Bedrock's also takes the clock it signs with.
+Swap `Claude.provider` for `OpenAI.provider` to talk to OpenAI instead; both take the API key first and then an optional `Config` (`apiUrl`, `model`, `maxOutputTokens`, `systemPrompt`) if you want to override the defaults. `systemPrompt` is sent as a top-level `system` field by Claude and as a leading `developer` message by OpenAI; leave it `none` to omit it from the request entirely. `Bedrock.provider creds (Bedrock.defaultConfig region)` reaches everything Amazon Bedrock hosts through its Converse API, chosen with `Config.model`; it signs with SigV4, so it takes AWS credentials in place of an API key, and its `Config` carries `region` rather than `apiUrl`. `Bedrock.credentialsFromEnv` and `Bedrock.regionFromEnv` read the usual `AWS_*` variables. Each `provider` is a `Provider IO` that posts with curl. `Claude.providerWith`, `OpenAI.providerWith` and `Bedrock.providerWith` take the `Transport` to post with instead, and build a `Provider m` for whatever monad it runs in; `ToolImpl m`, `LoopConfig m` and `converseLoop` follow it. Bedrock's also takes the clock it signs with. A `Transport` of your own is also how to test without a network.
 
 `tools` defaults to `#[]`, so it can be left off when you're not offering any (as above).
 
@@ -93,6 +93,21 @@ A tool whose answer is really JSON can say so with `runStructured`, an optional 
 `.error` carries a `LoopFailure`, which is the message *and* the history accumulated up to the failure. A turn can fail after its tools have already run: the model asked, the tools did what they were asked, and the round trip carrying their results back is what failed. Those calls have changed whatever they change, so a caller that persists conversations should record `failure.history` rather than lose it along with the error.
 
 That history ends mid-exchange, on the tool results rather than on a reply. Both the Converse and Messages APIs require roles to alternate, so a caller replaying it has to close it off with an assistant turn of its own before appending anything further.
+
+## In the browser
+
+`LLMClient.Core` is everything except curl, and builds with [Lasm](https://github.com/Millillion/lasm) for the browser. `LLMClient.Fetch` adds `Fetch.transport`, a `Transport Async` over the browser's `fetch`; it imports `Lasm.Web`, so only Lasm can build it:
+
+```lean
+import LLMClient.Core
+import LLMClient.Fetch
+
+open LLMClient Lasm.JS
+
+def provider (apiKey : String) : Provider Async := Claude.providerWith Fetch.transport apiKey
+```
+
+A blocking wait stops a browser app, so run the result in `Async` rather than `.block`ing on it.
 
 ## Development
 
