@@ -7,3 +7,6 @@ path = "../.."
 [[lean_exe]]
 name = "lasmtest"
 root = "Main"
+
+[[lean_lib]]
+name = "Tests"

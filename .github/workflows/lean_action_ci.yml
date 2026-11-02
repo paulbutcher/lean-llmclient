@@ -28,5 +28,7 @@ jobs:
           cache-dependency-path: test/lasm/package-lock.json
       - run: npm ci
         working-directory: test/lasm
+      - run: npx playwright install --with-deps chromium
+        working-directory: test/lasm
       - run: npm test
         working-directory: test/lasm

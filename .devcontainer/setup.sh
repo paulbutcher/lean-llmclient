@@ -19,3 +19,9 @@ fi
 
 # So that the first `lake build` is a build rather than a toolchain download.
 elan toolchain install "$(tr -d '[:space:]' < lean-toolchain)"
+
+# Chromium for driving Lasm's browser builds. It lives in ~/.cache, outside any
+# volume, so it is installed here, after the Node feature, on every rebuild. A
+# Playwright release only drives the browser build it downloaded, so a test using
+# Playwright has to pin this same version.
+npx -y playwright@1.64.1 install --with-deps chromium

@@ -2,6 +2,11 @@
 	"name": "Ubuntu",
 	"build": { "dockerfile": "Dockerfile" },
 
+  // Lasm, which builds LLMClient.Fetch, runs on Node 24 or later.
+  "features": {
+    "ghcr.io/devcontainers/features/node:2": { "version": "24" }
+  },
+
   // Runs on the host before the container exists, so that the bind mount below has
   // a directory to attach to. Without it Docker invents one owned by root, and the
   // container's `vscode` user cannot then write its own configuration.
