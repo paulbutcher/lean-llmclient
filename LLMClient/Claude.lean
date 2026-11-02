@@ -113,21 +113,21 @@ def requestBody (config : LLMClient.Config) (history : Array LLMClient.Msg)
 /-- Reads one Messages API response. Pure, so that what a status and body mean is settled here
 and the transport carrying them decides nothing. -/
 def parseReply (status : UInt32) (body : ByteArray) : Except String LLMClient.Reply :=
-  match String.fromUTF8? body with
-  | none => .error "the Claude API returned a response that wasn't valid UTF-8"
-  | some text =>
-    match Json.parse text with
-    | .error e => .error s!"couldn't parse the Claude API response: {e}"
-    | .ok json =>
-      if status >= 200 && status < 300 then
+  if status >= 200 && status < 300 then
+    match String.fromUTF8? body with
+    | none => .error "the Claude API returned a response that wasn't valid UTF-8"
+    | some text =>
+      match Json.parse text with
+      | .error e => .error s!"couldn't parse the Claude API response: {e}"
+      | .ok json =>
         let content := contentOf json
         .ok
           { text := extractText content,
             toolCalls := extractToolCalls content,
             isRefusal := stopReasonOf json == "refusal",
             isTruncated := stopReasonOf json == "max_tokens" }
-      else
-        .error s!"Claude API error ({status}): {errorMessageOf json}"
+  else
+    .error s!"Claude API error ({status}): {LLMClient.errorDetail errorMessageOf body}"
 
 /-- Posts one Messages API request with the given history; does not loop for tool use. -/
 def sendRequest [Monad m] (transport : LLMClient.Transport m) (config : LLMClient.Config)

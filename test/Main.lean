@@ -862,6 +862,22 @@ def testTransport (r : Results) : IO Results := do
       (match result with | .ok reply => reply.text == "hello" | .error _ => false)
   return r
 
+/-- An error status is reported as one whatever the body holds: a proxy or gateway in front of the
+API answers with HTML or with nothing, and the status is the one thing that still says what
+happened. -/
+def testErrorStatus (r : Results) : Results :=
+  let parsers : List (String × (UInt32 → ByteArray → Except String LLMClient.Reply)) :=
+    [ ("Claude", LLMClient.Claude.parseReply),
+      ("OpenAI", LLMClient.OpenAI.parseReply),
+      ("Bedrock", LLMClient.Bedrock.parseReply) ]
+  let page := "<html><body>Bad Gateway</body></html>"
+  parsers.foldl (init := r) fun r (name, parse) => r
+    |>.check s!"{name}: an error status with an HTML body reports the status and the body"
+      (isErrorMentioning (parse 502 page.toUTF8) "502" &&
+        isErrorMentioning (parse 502 page.toUTF8) page)
+    |>.check s!"{name}: an error status with no body reports the status"
+      (isErrorMentioning (parse 401 ByteArray.empty) "(401): no body")
+
 /-- Nothing below `converseLoop` may reach for `IO`, or a caller in another monad (`Async` in a
 browser) could not use it. Running the whole stack in `Id` makes any such dependency a type error
 in this file, and the checks confirm the stack still does its job there. -/
@@ -888,6 +904,7 @@ def runAll : IO Results := do
   let r := testStructuredResult r
   let r ← testTransport r
   let r := testPureMonad r
+  let r := testErrorStatus r
   testConverseLoop r
 
 def main : IO UInt32 := do

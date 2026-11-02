@@ -8,6 +8,7 @@
 - Breaking: `Provider`, `ToolImpl`, `LoopConfig` and `Transport` take the monad they run in, and `converseLoop` works in any `Monad`, so the library can run in `Async`.
 - Breaking: each provider's `sendRequest` takes the transport first, and Bedrock's then the clock it signs with.
 - Each provider exposes a pure `parseReply`, proved to succeed only on a 2xx status.
+- An error status is reported with the raw body when the body is not JSON, rather than as a parse failure.
 
 ## [0.9.4] - 2026-10-20
 

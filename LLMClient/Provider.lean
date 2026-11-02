@@ -75,6 +75,18 @@ structure HttpResponse where
   status : UInt32
   body : ByteArray
 
+/-- What an error response says, for a caller to read: the API's own message where the body is JSON,
+and otherwise the body as it came, since a proxy or gateway in the way answers with HTML or with
+nothing at all. -/
+def errorDetail (messageOf : Json → String) (body : ByteArray) : String :=
+  match String.fromUTF8? body with
+  | none => s!"a {body.size}-byte body that wasn't valid UTF-8"
+  | some text =>
+    if text.isEmpty then "no body"
+    else match Json.parse text with
+      | .ok json => messageOf json
+      | .error _ => text
+
 /-- Posts `body` to `url` with `headers`, the one HTTP operation every provider needs, so that
 which HTTP client carries it is the caller's choice. `.error` means no response arrived at all; a
 response with an error status is still `.ok`, since its body says what went wrong. -/

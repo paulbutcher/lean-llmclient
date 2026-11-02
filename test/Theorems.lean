@@ -380,12 +380,8 @@ theorem claude_parseReply_ok_only_2xx (status : UInt32) (body : ByteArray) (r : 
     (h : Claude.parseReply status body = .ok r) : status ≥ 200 ∧ status < 300 := by
   unfold Claude.parseReply at h
   split at h
+  · simp_all
   · cases h
-  · split at h
-    · cases h
-    · split at h
-      · simp_all
-      · cases h
 
 /-- A Chat Completions response is read as a reply only when its status says the request
 succeeded. An error body has no `choices`, which `messageOf` reads as an empty message without
@@ -399,12 +395,8 @@ theorem openai_parseReply_ok_only_2xx (status : UInt32) (body : ByteArray) (r : 
     (h : OpenAI.parseReply status body = .ok r) : status ≥ 200 ∧ status < 300 := by
   unfold OpenAI.parseReply at h
   split at h
+  · simp_all
   · cases h
-  · split at h
-    · cases h
-    · split at h
-      · simp_all
-      · cases h
 
 /-- A Converse response is read as a reply only when its status says the request succeeded. An
 error body has no `output`, which `contentOf` reads as no content blocks without complaint, so
@@ -419,11 +411,7 @@ theorem bedrock_parseReply_ok_only_2xx (status : UInt32) (body : ByteArray) (r :
     (h : Bedrock.parseReply status body = .ok r) : status ≥ 200 ∧ status < 300 := by
   unfold Bedrock.parseReply at h
   split at h
+  · simp_all
   · cases h
-  · split at h
-    · cases h
-    · split at h
-      · simp_all
-      · cases h
 
 end LLMClient.Test

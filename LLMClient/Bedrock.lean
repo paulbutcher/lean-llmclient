@@ -164,13 +164,13 @@ def currentTimestamp : IO Aws.Sigv4.Timestamp := do
 /-- Reads one Converse response. Pure, so that what a status and body mean is settled here and the
 transport carrying them decides nothing. -/
 def parseReply (status : UInt32) (body : ByteArray) : Except String LLMClient.Reply :=
-  match String.fromUTF8? body with
-  | none => .error "the Bedrock API returned a response that wasn't valid UTF-8"
-  | some text =>
-    match Json.parse text with
-    | .error e => .error s!"couldn't parse the Bedrock API response: {e}"
-    | .ok json =>
-      if status >= 200 && status < 300 then
+  if status >= 200 && status < 300 then
+    match String.fromUTF8? body with
+    | none => .error "the Bedrock API returned a response that wasn't valid UTF-8"
+    | some text =>
+      match Json.parse text with
+      | .error e => .error s!"couldn't parse the Bedrock API response: {e}"
+      | .ok json =>
         let content := contentOf json
         .ok
           { text := extractText content,
@@ -179,8 +179,8 @@ def parseReply (status : UInt32) (body : ByteArray) : Except String LLMClient.Re
               stopReasonOf json == "content_filtered" ||
                 stopReasonOf json == "guardrail_intervened",
             isTruncated := stopReasonOf json == "max_tokens" }
-      else
-        .error s!"Bedrock API error ({status}): {errorMessageOf json}"
+  else
+    .error s!"Bedrock API error ({status}): {LLMClient.errorDetail errorMessageOf body}"
 
 /-- Posts one Converse request with the given history; does not loop for tool use. `clock` gives
 the time the request is signed at.
