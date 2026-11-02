@@ -67,6 +67,9 @@ structure Config where
   /-- Fixed instruction sent with every request, independent of conversation history. Omitted
   from the request entirely when `none`, rather than sent as an empty or null value. -/
   systemPrompt : Option String := none
+  /-- Sent after the provider's own headers. Anthropic refuses a request from a browser unless it
+  carries `anthropic-dangerous-direct-browser-access: true`. -/
+  extraHeaders : List (String × String) := []
 
 structure HttpResponse where
   status : UInt32

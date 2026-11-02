@@ -800,6 +800,17 @@ def testTransport (r : Results) : IO Results := do
     |>.check "Claude: a transport failure reports the transport's message"
       (isErrorMentioning failed "connection refused")
 
+  let browserConfig := { LLMClient.Claude.defaultConfig with
+    extraHeaders := [("anthropic-dangerous-direct-browser-access", "true")] }
+  let _ ← (LLMClient.Claude.providerWith (recordingTransport sent (ok200 claudeReply)) "key-1"
+    browserConfig).sendRequest sampleHistory
+  let s ← sent.get
+  let r := r
+    |>.check "Claude: sends extraHeaders"
+      (header s "anthropic-dangerous-direct-browser-access" == some "true")
+    |>.check "Claude: extraHeaders do not displace the provider's own"
+      (header s "x-api-key" == some "key-1")
+
   let openaiReply := Json.mkObj
     [("choices", Json.arr #[Json.mkObj [("message", Json.mkObj [("content", "hello")])]])]
   let openai := LLMClient.OpenAI.providerWith (recordingTransport sent (ok200 openaiReply)) "key-2"
@@ -815,6 +826,17 @@ def testTransport (r : Results) : IO Results := do
         some (LLMClient.OpenAI.requestBody LLMClient.OpenAI.defaultConfig sampleHistory))
     |>.check "OpenAI: reads the reply out of the transport's response"
       (match result with | .ok reply => reply.text == "hello" | .error _ => false)
+
+  let orgConfig := { LLMClient.OpenAI.defaultConfig with
+    extraHeaders := [("openai-organization", "org-1")] }
+  let _ ← (LLMClient.OpenAI.providerWith (recordingTransport sent (ok200 openaiReply)) "key-2"
+    orgConfig).sendRequest sampleHistory
+  let s ← sent.get
+  let r := r
+    |>.check "OpenAI: sends extraHeaders"
+      (header s "openai-organization" == some "org-1")
+    |>.check "OpenAI: extraHeaders do not displace the provider's own"
+      (header s "authorization" == some "Bearer key-2")
 
   let creds : Aws.Sigv4.Credentials :=
     { accessKeyId := "AKIDEXAMPLE", secretAccessKey := "secret", sessionToken := none }

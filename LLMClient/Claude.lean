@@ -137,7 +137,7 @@ def sendRequest [Monad m] (transport : LLMClient.Transport m) (config : LLMClien
   let headers :=
     [ ("x-api-key", apiKey),
       ("anthropic-version", "2023-06-01"),
-      ("content-type", "application/json") ]
+      ("content-type", "application/json") ] ++ config.extraHeaders
   match ← transport config.apiUrl body.compress.toUTF8 headers with
   | .error e => return .error s!"request to the Claude API failed: {e}"
   | .ok resp => return parseReply resp.status resp.body

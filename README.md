@@ -32,7 +32,7 @@ def main : IO Unit := do
   | .error msg => IO.eprintln s!"request failed: {msg}"
 ```
 
-Swap `Claude.provider` for `OpenAI.provider` to talk to OpenAI instead; both take the API key first and then an optional `Config` (`apiUrl`, `model`, `maxOutputTokens`, `systemPrompt`) if you want to override the defaults. `systemPrompt` is sent as a top-level `system` field by Claude and as a leading `developer` message by OpenAI; leave it `none` to omit it from the request entirely. `Bedrock.provider creds (Bedrock.defaultConfig region)` reaches everything Amazon Bedrock hosts through its Converse API, chosen with `Config.model`; it signs with SigV4, so it takes AWS credentials in place of an API key, and its `Config` carries `region` rather than `apiUrl`. `Bedrock.credentialsFromEnv` and `Bedrock.regionFromEnv` read the usual `AWS_*` variables. Each `provider` is a `Provider IO` that posts with curl. `Claude.providerWith`, `OpenAI.providerWith` and `Bedrock.providerWith` take the `Transport` to post with instead, and build a `Provider m` for whatever monad it runs in; `ToolImpl m`, `LoopConfig m` and `converseLoop` follow it. Bedrock's also takes the clock it signs with. A `Transport` of your own is also how to test without a network.
+Swap `Claude.provider` for `OpenAI.provider` to talk to OpenAI instead; both take the API key first and then an optional `Config` (`apiUrl`, `model`, `maxOutputTokens`, `systemPrompt`, `extraHeaders`) if you want to override the defaults. `systemPrompt` is sent as a top-level `system` field by Claude and as a leading `developer` message by OpenAI; leave it `none` to omit it from the request entirely. `Bedrock.provider creds (Bedrock.defaultConfig region)` reaches everything Amazon Bedrock hosts through its Converse API, chosen with `Config.model`; it signs with SigV4, so it takes AWS credentials in place of an API key, and its `Config` carries `region` rather than `apiUrl`. `Bedrock.credentialsFromEnv` and `Bedrock.regionFromEnv` read the usual `AWS_*` variables. Each `provider` is a `Provider IO` that posts with curl. `Claude.providerWith`, `OpenAI.providerWith` and `Bedrock.providerWith` take the `Transport` to post with instead, and build a `Provider m` for whatever monad it runs in; `ToolImpl m`, `LoopConfig m` and `converseLoop` follow it. Bedrock's also takes the clock it signs with. A `Transport` of your own is also how to test without a network.
 
 `tools` defaults to `#[]`, so it can be left off when you're not offering any (as above).
 
@@ -104,10 +104,17 @@ import LLMClient.Fetch
 
 open LLMClient Lasm.JS
 
-def provider (apiKey : String) : Provider Async := Claude.providerWith Fetch.transport apiKey
+def provider (apiKey : String) : Provider Async :=
+  Claude.providerWith Fetch.transport apiKey
+    { Claude.defaultConfig with
+      extraHeaders := [("anthropic-dangerous-direct-browser-access", "true")] }
 ```
 
 A blocking wait stops a browser app, so run the result in `Async` rather than `.block`ing on it.
+
+Anthropic refuses a request from a browser without that header. OpenAI and Bedrock accept one as is.
+
+Anything the page holds, an API key or AWS credentials, is visible to everyone who loads it. Have each user supply their own key, give the page short-lived credentials scoped to what it needs (for Bedrock, from Amazon Cognito, say), or keep the key on a server of your own and point `apiUrl` at that.
 
 ## Development
 
