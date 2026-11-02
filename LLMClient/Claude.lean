@@ -11,7 +11,7 @@ public section
 namespace LLMClient.Claude
 
 def defaultConfig : LLMClient.Config :=
-  { apiUrl := "https://api.anthropic.com/v1/messages", model := "claude-opus-5" }
+  { apiUrl := "https://api.anthropic.com/v1/messages", model := "claude-opus-5-5" }
 
 def toolJson (t : LLMClient.Tool) : Json :=
   Json.mkObj [("name", t.name), ("description", t.description), ("input_schema", t.schema)]
@@ -24,6 +24,16 @@ def toolResultJson (id output : String) (isError : Bool := false) : Json :=
     [("type", "tool_result"), ("tool_use_id", id), ("content", output)]
   Json.mkObj (if isError then fields ++ [("is_error", Json.bool true)] else fields)
 
+/-- An empty text block is omitted, since the API rejects one. Anything else is written exactly as it
+arrived, so that a replayed turn is the turn the model produced. -/
+def blockJson : LLMClient.Block → Option Json
+  | .text text => if text.isEmpty then none else some (Json.mkObj [("type", "text"), ("text", text)])
+  | .toolCall tc =>
+    some (Json.mkObj [("type", "tool_use"), ("id", tc.id), ("name", tc.name), ("input", tc.input)])
+  | .thinking thinking signature =>
+    some (Json.mkObj [("type", "thinking"), ("thinking", thinking), ("signature", signature)])
+  | .redactedThinking data => some (Json.mkObj [("type", "redacted_thinking"), ("data", data)])
+
 /-- A lone `.toolResult` becomes a message of its own here, which is right only when it is the one
 result outstanding. `messagesJson` is what a request is built from, and it groups.
 
@@ -32,11 +42,8 @@ is a string or text and image blocks, with nowhere to put JSON, so `output` is w
 sees. Only Converse has a place for it. -/
 def msgJson : LLMClient.Msg → Json
   | .user text => Json.mkObj [("role", "user"), ("content", text)]
-  | .assistant text toolCalls =>
-    let textBlock := if text.isEmpty then #[] else #[Json.mkObj [("type", "text"), ("text", text)]]
-    let toolBlocks := toolCalls.map fun tc =>
-      Json.mkObj [("type", "tool_use"), ("id", tc.id), ("name", tc.name), ("input", tc.input)]
-    Json.mkObj [("role", "assistant"), ("content", Json.arr (textBlock ++ toolBlocks))]
+  | .assistant content =>
+    Json.mkObj [("role", "assistant"), ("content", Json.arr (content.filterMap blockJson))]
   | .toolResult id output isError _ =>
     Json.mkObj [("role", "user"), ("content", Json.arr #[toolResultJson id output isError])]
 
@@ -79,23 +86,26 @@ def errorMessageOf (j : Json) : String :=
   | .ok msg => msg
   | .error _ => j.compress
 
-def extractText (content : Array Json) : String :=
-  content.foldl (init := "") fun acc b =>
-    if blockType b == "text" then
-      match b.getObjVal? "text" >>= Json.getStr? with
-      | .ok t => acc ++ t
-      | .error _ => acc
-    else acc
+def strField (b : Json) (k : String) : Option String := (b.getObjVal? k >>= Json.getStr?).toOption
 
-def extractToolCalls (content : Array Json) : Array LLMClient.ToolCall :=
-  content.filterMap fun b =>
-    if blockType b == "tool_use" then
-      match b.getObjVal? "id" >>= Json.getStr?, b.getObjVal? "name" >>= Json.getStr? with
-      | .ok id, .ok name =>
-        let input := (b.getObjVal? "input").toOption.getD (Json.mkObj [])
-        some { id, name, input }
-      | _, _ => none
-    else none
+/-- The inverse of `blockJson`. A block missing a field it cannot do without is dropped, and so is
+a block of a type this library does not model. -/
+def readBlock (b : Json) : Option LLMClient.Block :=
+  match blockType b with
+  | "text" => (strField b "text").bind fun t => if t.isEmpty then none else some (.text t)
+  | "tool_use" =>
+    match strField b "id", strField b "name" with
+    | some id, some name =>
+      some (.toolCall { id, name, input := (b.getObjVal? "input").toOption.getD (Json.mkObj []) })
+    | _, _ => none
+  | "thinking" =>
+    match strField b "thinking", strField b "signature" with
+    | some thinking, some signature => some (.thinking thinking signature)
+    | _, _ => none
+  | "redacted_thinking" => (strField b "data").map .redactedThinking
+  | _ => none
+
+def extractContent (content : Array Json) : Array LLMClient.Block := content.filterMap readBlock
 
 /-- The Messages API takes a system prompt as a top-level `system` string field, a sibling of
 `messages` rather than a message inside it, so it's appended here instead of via `msgJson`. -/
@@ -122,8 +132,7 @@ def parseReply (status : UInt32) (body : ByteArray) : Except String LLMClient.Re
       | .ok json =>
         let content := contentOf json
         .ok
-          { text := extractText content,
-            toolCalls := extractToolCalls content,
+          { content := extractContent content,
             isRefusal := stopReasonOf json == "refusal",
             isTruncated := stopReasonOf json == "max_tokens" }
   else

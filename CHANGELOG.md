@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.11.0] - 2026-11-02
+
+- Breaking: `Msg.assistant` holds the turn's `Block`s in order, and `Reply` holds them as `content`, with `text` and `toolCalls` read from it.
+- Claude's thinking blocks are kept and replayed unchanged, so the model keeps its reasoning across the tool calls of a turn.
+- `Turn`, `Pending` and `Step` expose `converseLoop`'s rules as pure steps, for a caller that drives a turn one round trip at a time.
+- `appendResults` and `unknownTool?` answer tool calls as `converseLoop` does.
+- `closeOff` closes a history that ends on tool results with an assistant turn.
+- `Msg` has a JSON encoding for storage, documented in the README.
+- Breaking: `Claude.defaultConfig` uses `claude-opus-5-5`.
+- Breaking: `extractText` and `extractToolCalls` are replaced by `extractContent` in the Claude and Bedrock modules.
+
 ## [0.10.0] - 2026-11-02
 
 - `Config.extraHeaders` adds headers to every request, such as the one Anthropic requires from a browser.

@@ -59,8 +59,10 @@ match ← provider.sendRequest history #[getWeather] with
       let city := (call.input.getObjVal? "city" >>= Json.getStr?).toOption.getD ""
       IO.println s!"model wants the weather for {city}"
       -- feed the result back on the next request:
-      -- history.push (.assistant reply.text reply.toolCalls) |>.push (.toolResult call.id "15°C, cloudy")
+      -- history.push (.assistant reply.content) |>.push (.toolResult call.id "15°C, cloudy")
 ```
+
+`Msg.assistant` holds the turn's `Block`s in the order the model produced them: text, tool calls, and Claude's thinking. `reply.text` and `reply.toolCalls` read the text and the calls out of `reply.content`. Push `reply.content` back unchanged: Claude binds each thinking block to everything before it, so a turn replayed with its text merged or its blocks reordered loses the reasoning that follows. OpenAI and Bedrock drop thinking blocks when they send a turn, which the APIs permit.
 
 ## Multi-turn tool loops
 
@@ -92,7 +94,45 @@ A tool whose answer is really JSON can say so with `runStructured`, an optional 
 
 `.error` carries a `LoopFailure`, which is the message *and* the history accumulated up to the failure. A turn can fail after its tools have already run: the model asked, the tools did what they were asked, and the round trip carrying their results back is what failed. Those calls have changed whatever they change, so a caller that persists conversations should record `failure.history` rather than lose it along with the error.
 
-That history ends mid-exchange, on the tool results rather than on a reply. Both the Converse and Messages APIs require roles to alternate, so a caller replaying it has to close it off with an assistant turn of its own before appending anything further.
+That history ends mid-exchange, on the tool results rather than on a reply. The APIs require roles to alternate, so `closeOff failure.history text` appends an assistant turn saying `text` when the history ends on tool results, and returns any other history unchanged.
+
+### Driving a turn yourself
+
+`converseLoop` runs the tools in its own monad for the whole turn. A caller that owns its state elsewhere, such as an Elm-style `update`, can drive the same rules one round trip at a time, since `converseLoop` is built from them. Each step is pure and answers a `Step`:
+
+- `.send turn`: send `turn.history`, and pass the reply to `turn.receive`.
+- `.runTools pending`: run `pending.calls` and pass a function answering each one to `pending.answer`.
+- `.done history text`: the turn is over, with what `converseLoop` would have returned.
+
+```lean
+def start (history : Array Msg) : Step := Turn.start history (maxIterations := 5)
+
+def onReply (turn : Turn) (reply : Reply) : Step := turn.receive reply
+
+def onTools (pending : Pending) (model : Model) : Step :=
+  pending.answer fun call =>
+    (unknownTool? #["list_todos", "add_todo"] call).getD (runTool model call)
+```
+
+A refusal, a truncated reply and a reply asking for no tools end the turn. The iteration cap travels in the `Turn` and `Pending` values, which only the step functions construct, so it cannot be lost between round trips. `unknownTool?` answers a call naming a tool not on offer as `converseLoop` does, and `appendResults` is the rule `pending.answer` uses to turn outcomes into tool results: one per call, in order, flagged as an error exactly when the outcome is `.error`. When a request fails after tools have run, `turn.history` ends on their results; close it off with `closeOff` as above.
+
+## Storing a conversation
+
+`Msg` has `Json.ToJson` and `Json.FromJson` instances (`Msg.toJson`, `Msg.fromJson?`) for a caller that keeps a conversation and replays it later. Every field survives the round trip, as `test/Theorems.lean` proves. Decoding rejects anything the encoder would not have written, unexpected fields included, with a message saying what was wrong, and leaves it to the caller whether to drop a bad entry or reject the whole history.
+
+The format is part of the library's interface: a change to it is recorded in the changelog as breaking.
+
+| Value | JSON |
+| --- | --- |
+| `.user text` | `{"role": "user", "text": text}` |
+| `.assistant content` | `{"role": "assistant", "content": [block, ...]}` |
+| `.toolResult id output isError structured` | `{"role": "tool_result", "id": id, "output": output, "is_error": isError}`, plus `"structured": value` when `structured` is `some value` |
+| `.text text` | `{"type": "text", "text": text}` |
+| `.toolCall {id, name, input}` | `{"type": "tool_call", "id": id, "name": name, "input": input}` |
+| `.thinking thinking signature` | `{"type": "thinking", "thinking": thinking, "signature": signature}` |
+| `.redactedThinking data` | `{"type": "redacted_thinking", "data": data}` |
+
+`structured` is omitted rather than written as `null` because `null` is a value it can hold. A caller that does not want it can drop it before storing.
 
 ## In the browser
 

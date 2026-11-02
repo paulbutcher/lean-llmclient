@@ -33,10 +33,13 @@ message has no field for it, so a failure reaches the model only through the tex
 Anthropic's `is_error` and Converse's `status` both carry it.
 
 `structured` is dropped for the same reason: a tool message's `content` is a string, and only
-Converse has a place for JSON. -/
+Converse has a place for JSON. So are thinking blocks, which are Claude's; an assistant message's
+text blocks become its one `content` string. -/
 def msgJson : LLMClient.Msg → Json
   | .user text => Json.mkObj [("role", "user"), ("content", text)]
-  | .assistant text toolCalls =>
+  | .assistant blocks =>
+    let text := Block.joinText blocks
+    let toolCalls := Block.toolCalls blocks
     let content := if text.isEmpty then Json.null else Json.str text
     if toolCalls.isEmpty then
       Json.mkObj [("role", "assistant"), ("content", content)]
@@ -106,9 +109,9 @@ def parseReply (status : UInt32) (body : ByteArray) : Except String LLMClient.Re
       | .ok json =>
         let message := messageOf json
         let content := (message.getObjVal? "content" >>= Json.getStr?).toOption.getD ""
+        let textBlock := if content.isEmpty then #[] else #[Block.text content]
         .ok
-          { text := content,
-            toolCalls := extractToolCalls message,
+          { content := textBlock ++ (extractToolCalls message).map Block.toolCall,
             isRefusal := finishReasonOf json == "content_filter",
             isTruncated := finishReasonOf json == "length" }
   else

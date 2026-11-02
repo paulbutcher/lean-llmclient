@@ -58,17 +58,21 @@ a `structured` result goes in a `json` block and `output` is sent only when ther
         Json.mkObj (if isError then fields ++ [("status", Json.str "error")] else fields)) ]
 
 /-- Converse blocks carry no discriminating `type` field the way Anthropic's do; a block is a
-one-key object and the key is what it is.
+one-key object and the key is what it is. An empty text block is omitted, since Converse rejects
+one, and thinking blocks are dropped: Converse carries reasoning in a shape of its own, and
+replaying none of it is permitted. -/
+@[expose] def blockJson : LLMClient.Block → Option Json
+  | .text text => if text.isEmpty then none else some (Json.mkObj [("text", text)])
+  | .toolCall tc => some (toolCallJson tc)
+  | .thinking _ _ | .redactedThinking _ => none
 
-A lone `.toolResult` becomes a message of its own here, which is right only when it is the one
+/-- A lone `.toolResult` becomes a message of its own here, which is right only when it is the one
 result outstanding. `messagesJson` is what a request is built from, and it groups. -/
 @[expose] def msgJson : LLMClient.Msg → Json
   | .user text =>
     Json.mkObj [("role", "user"), ("content", Json.arr #[Json.mkObj [("text", text)]])]
-  | .assistant text toolCalls =>
-    let textBlock := if text.isEmpty then #[] else #[Json.mkObj [("text", text)]]
-    let toolBlocks := toolCalls.map toolCallJson
-    Json.mkObj [("role", "assistant"), ("content", Json.arr (textBlock ++ toolBlocks))]
+  | .assistant content =>
+    Json.mkObj [("role", "assistant"), ("content", Json.arr (content.filterMap blockJson))]
   | .toolResult id output isError structured =>
     Json.mkObj
       [ ("role", "user"),
@@ -110,22 +114,23 @@ def errorMessageOf (j : Json) : String :=
   | .ok msg => msg
   | .error _ => j.compress
 
-@[expose] def extractText (content : Array Json) : String :=
-  content.foldl (init := "") fun acc b =>
-    match b.getObjVal? "text" >>= Json.getStr? with
-    | .ok t => acc ++ t
-    | .error _ => acc
-
-@[expose] def extractToolCalls (content : Array Json) : Array LLMClient.ToolCall :=
-  content.filterMap fun b =>
+/-- The inverse of `blockJson`. A block of a kind this library does not model, reasoning included,
+is dropped. -/
+@[expose] def readBlock (b : Json) : Option LLMClient.Block :=
+  match b.getObjVal? "text" >>= Json.getStr? with
+  | .ok t => if t.isEmpty then none else some (.text t)
+  | .error _ =>
     match b.getObjVal? "toolUse" with
     | .ok use =>
       match use.getObjVal? "toolUseId" >>= Json.getStr?, use.getObjVal? "name" >>= Json.getStr? with
       | .ok id, .ok name =>
         let input := (use.getObjVal? "input").toOption.getD (Json.mkObj [])
-        some { id, name, input }
+        some (.toolCall { id, name, input })
       | _, _ => none
     | .error _ => none
+
+@[expose] def extractContent (content : Array Json) : Array LLMClient.Block :=
+  content.filterMap readBlock
 
 /-- The model is named by the URL rather than the body, and `toolConfig` is omitted rather than
 sent empty: Converse rejects a `tools` array of length zero. -/
@@ -173,8 +178,7 @@ def parseReply (status : UInt32) (body : ByteArray) : Except String LLMClient.Re
       | .ok json =>
         let content := contentOf json
         .ok
-          { text := extractText content,
-            toolCalls := extractToolCalls content,
+          { content := extractContent content,
             isRefusal :=
               stopReasonOf json == "content_filtered" ||
                 stopReasonOf json == "guardrail_intervened",

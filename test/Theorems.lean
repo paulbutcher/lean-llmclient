@@ -5,125 +5,50 @@ import LLMClient
 
 namespace LLMClient.Test
 
-/-- A fold whose step ignores its element and hands the accumulator straight back leaves the
-starting value alone, however long the array. The round-trip theorems below rest on this: rather
-than reason about each block that is meant to contribute nothing, they show the step is a no-op
-over those blocks and the whole fold collapses.
+private def isEmptyText : Block → Bool
+  | .text t => t.isEmpty
+  | _ => false
 
-`f` is the step, `init` the starting accumulator, and `a` an arbitrary array of any element type.
-The hypothesis `h` says `f b x = b` at every accumulator and every element, so it constrains `f`
-alone and says nothing about `a`; the conclusion is that folding `f` over `a` returns `init`
-unchanged. `a` may be empty, which would make the claim trivial, but the induction is over its
-length and so covers every other case too. -/
-private theorem foldl_eq_init {α β : Type _} (f : β → α → β) (init : β) (a : Array α)
-    (h : ∀ b x, f b x = b) : a.foldl f init = init := by
-  rw [← Array.foldl_toList]
-  induction a.toList generalizing init with
-  | nil => simp
-  | cons x xs ih => simp [h, ih]
+/-- One block written for the Messages API and read back is the block it was, unless it is an empty
+text block, which the encoder omits. The round trip of a whole turn below is this, block by block.
 
-/-- The same collapse one step earlier, for a fold over an array that is itself the image of a
-map. It asks only that the step be a no-op on the values the map produces, not on every value of
-the mapped-to type, which is the form the round-trip theorems can actually discharge: they fold an
-extractor over blocks built by an encoding function.
+`b` ranges over every `Block`. `Claude.blockJson` answers `none` for a block it omits and the JSON
+otherwise, and `Option.bind` feeds that JSON to `Claude.readBlock`, so the left side is what
+reading back the encoding yields. `isEmptyText` answers `true` only for a text block holding the
+empty string, and the claim is that exactly those come back as `none` and every other block as
+itself, signatures and tool inputs included. -/
+private theorem claude_block_roundTrip (b : Block) :
+    (Claude.blockJson b).bind Claude.readBlock = if isEmptyText b then none else some b := by
+  cases b with
+  | text t =>
+    by_cases h : t.isEmpty
+    · simp [Claude.blockJson, isEmptyText, h]
+    · simp only [Claude.blockJson, isEmptyText, h]
+      show (if t.isEmpty = true then none else some (Block.text t)) = _
+      simp [h]
+  | toolCall tc => cases tc; rfl
+  | thinking => rfl
+  | redactedThinking => rfl
 
-`g` builds each folded element from an element of `a`, `f` is the step and `init` the starting
-accumulator. `h` requires `f b (g x) = b` only for `x` drawn from the source type, so `f` is free
-to change the accumulator on values outside `g`'s range; the conclusion is that folding over
-`a.map g` still returns `init`. `a` may again be empty, but the proof rewrites to the unmapped
-form above rather than relying on that case. -/
-private theorem foldl_map_eq_init {α β γ : Type _} (f : β → γ → β) (g : α → γ) (init : β)
-    (a : Array α) (h : ∀ b x, f b (g x) = b) : (a.map g).foldl f init = init := by
-  rw [Array.foldl_map]
-  exact foldl_eq_init _ init a h
+/-- An assistant turn written for the Messages API and read back as a response is the turn it was,
+block for block and in order, less any empty text block. Claude checks that a replayed thinking
+block follows exactly what preceded it, so a turn that changed on the way through, its text merged
+or its blocks reordered, would cost the reasoning that follows it or fail the request outright.
 
-/-- Encoding every element of an array and then decoding the results recovers the array exactly:
-same elements, same order, nothing dropped. Every round-trip theorem here reduces to this shape,
-and it is what rules out a decoder that quietly loses or reorders entries.
-
-`g` is the encoder and `f` the decoder, which returns an `Option` because it is free to reject
-what it is given. `h` says the decoder answers `some x` on anything `g` built from `x`, so it
-never rejects and never yields some other element. `filterMap` both discards the `none`s and
-unwraps the `some`s, and the conclusion is that doing so gives back `a` itself. The hypothesis
-constrains `f ∘ g` alone, leaving `a` arbitrary, so the claim covers arrays of every length rather
-than just the empty one. -/
-private theorem filterMap_map_id {α γ : Type _} (f : γ → Option α) (g : α → γ) (a : Array α)
-    (h : ∀ x, f (g x) = some x) : (a.map g).filterMap f = a := by
-  rw [Array.filterMap_map]
-  rw [show f ∘ g = some from funext h]
-  simp
-
-/-- Claude's response reader finds the content blocks in the object shape the encoder produces.
-This is what makes it legitimate for the round-trip theorems below to feed an encoded assistant
-message straight back into the reader; without it they would be proving something about
-`contentOf` applied to an object it never receives.
-
-`r` stands for whatever the `role` field holds, so the claim is independent of the role, and `a`
-is the block array under `content`. `contentOf` looks `content` up and asks for an array, falling
-back to `#[]` if either step fails. The statement is that on this object it returns `a` itself, so
-what the round-trip theorems read is the encoder's own output and not that fallback. -/
-private theorem contentOf_mkObj (r : Json) (a : Array Json) :
-    Claude.contentOf (Json.mkObj [("role", r), ("content", Json.arr a)]) = a := rfl
-
-/-- Reading tool calls out of a run of blocks does not depend on where that run is split: the
-calls found in two concatenated block arrays are those of the first followed by those of the
-second. The round-trip theorem below builds content as a text block followed by tool-use blocks,
-and this is what lets it take the two halves separately.
-
-`x` and `y` are arbitrary block arrays, well-formed or not. The claim is that `extractToolCalls`
-of `x ++ y` equals its result on `x` appended to its result on `y`, which holds because it is a
-`filterMap`: each block's fate is decided by that block alone, so nothing is gained or lost at the
-join. Neither array is required to be non-empty, and since both are arbitrary the identity is not
-carried by an empty case. -/
-private theorem extractToolCalls_append (x y : Array Json) :
-    Claude.extractToolCalls (x ++ y) =
-      Claude.extractToolCalls x ++ Claude.extractToolCalls y := by
-  simp [Claude.extractToolCalls, Array.filterMap_append]
-
-/-- Every text block Claude sends back survives the encode/decode round trip, concatenated in
-order and with the tool-call blocks contributing nothing. The text a caller reads off `Reply` is
-therefore exactly what the model wrote, and a turn that also asks for tools cannot corrupt it.
-
-`text` is the assistant turn's prose and `tcs` the calls it requests. `msgJson` encodes both into
-a Messages API assistant message, `contentOf` takes the content blocks back out, and `extractText`
-concatenates the `text` field of every block whose `type` is `"text"`, skipping the rest. The
-claim is that this yields `text` itself, so the tool-use blocks contribute nothing and the text
-block is reproduced verbatim. `text` may be empty, in which case the encoder emits no text block
-at all and the theorem still asserts `""`; that is a real case the proof splits on, not an
-escape. -/
-theorem claude_extractText_roundTrip (text : String) (tcs : Array ToolCall) :
-    Claude.extractText (Claude.contentOf (Claude.msgJson (.assistant text tcs))) = text := by
-  simp only [Claude.msgJson, contentOf_mkObj, Claude.extractText]
-  rw [Array.foldl_append, foldl_map_eq_init _ _ _ _ (by intro b tc; rfl)]
-  split
-  · simp_all [String.isEmpty_iff]
-  · rfl
-
-/-- Every tool call survives the encode/decode round trip unchanged and in order, whatever text
-accompanies it. A caller dispatching on `ToolCall.name` and answering with `ToolCall.id` is
-therefore working from what the model actually asked for.
-
-`tcs` are the calls the assistant turn requests and `text` the prose alongside them. `msgJson`
-writes each call as a `tool_use` block, `contentOf` recovers the block array, and
-`extractToolCalls` keeps the `tool_use` blocks whose `id` and `name` are strings and rebuilds a
-`ToolCall` from each. The claim is equality with `tcs` itself: no call is dropped by that
-well-formedness check, none is reordered, and the text block yields none. `tcs` may be empty, but
-the mapping lemma the proof applies holds at every length, and the proof still splits on whether
-`text` is empty. -/
-theorem claude_extractToolCalls_roundTrip (text : String) (tcs : Array ToolCall) :
-    Claude.extractToolCalls (Claude.contentOf (Claude.msgJson (.assistant text tcs))) = tcs := by
-  simp only [Claude.msgJson, contentOf_mkObj]
-  rw [extractToolCalls_append]
-  rw [show Claude.extractToolCalls
-    (tcs.map fun tc => Json.mkObj
-      [("type", Json.str "tool_use"), ("id", Json.str tc.id), ("name", Json.str tc.name),
-        ("input", tc.input)]) = tcs from filterMap_map_id _ _ _ (fun _ => rfl)]
-  split
-  · rw [show Claude.extractToolCalls (#[] : Array Json) = #[] from rfl]
-    simp
-  · rw [show Claude.extractToolCalls
-      #[Json.mkObj [("type", Json.str "text"), ("text", Json.str text)]] = #[] from rfl]
-    simp
+`content` is any sequence of blocks. `msgJson` encodes it as an assistant message, `contentOf`
+takes the block array back out of an object of that shape, which is how a response carries it,
+and `extractContent` reads each block. The claim is that this yields `content` with only the empty
+text blocks removed, which `filter` does without disturbing the order of the rest. That the API
+treats a turn so replayed as unchanged is a fact about the API, not something proved here. -/
+theorem claude_content_roundTrip (content : Array Block) :
+    Claude.extractContent (Claude.contentOf (Claude.msgJson (.assistant content))) =
+      content.filter (!isEmptyText ·) := by
+  show (content.filterMap Claude.blockJson).filterMap Claude.readBlock = _
+  rw [Array.filterMap_filterMap]
+  simp only [claude_block_roundTrip]
+  rw [← Array.filterMap_eq_filter]
+  congr 1
+  all_goals first | rfl | (funext b; cases h : isEmptyText b <;> simp [Option.guard, h])
 
 /-- No `Msg` can encode to a role the Messages API will not accept. `role` is the one field every
 message carries and the only one whose set of legal values is fixed, so a mistake in it fails the
@@ -180,13 +105,15 @@ theorem openai_msgJson_role (m : Msg) :
 an empty string there, so this is the difference between a tool-calling turn replaying cleanly and
 the whole request being refused.
 
-`tcs` is arbitrary, so the claim covers both the branch that emits a `tool_calls` field and the
-branch that does not; only the text is fixed, at `""`. The statement is that `content` is present
-and holds `Json.null`, not `Json.str ""`. It says nothing about a non-empty `text`, which is sent
-as a string and is covered by the round-trip theorems instead. -/
-theorem openai_assistant_emptyText_isNull (tcs : Array ToolCall) :
-    (OpenAI.msgJson (.assistant "" tcs)).getObjVal? "content" = .ok Json.null := by
-  simp only [OpenAI.msgJson]
+`content` is any sequence of blocks whose text blocks join to the empty string, which covers a
+turn of tool calls alone, one of thinking alone, and one with nothing in it. The claim covers both
+the branch that emits a `tool_calls` field and the branch that does not: `content` is present and
+holds `Json.null`, not `Json.str ""`. The hypothesis is met by exactly those turns, so it does not
+make the claim vacuous. -/
+theorem openai_assistant_emptyText_isNull (content : Array Block)
+    (h : Block.joinText content = "") :
+    (OpenAI.msgJson (.assistant content)).getObjVal? "content" = .ok Json.null := by
+  simp only [OpenAI.msgJson, h]
   split <;> rfl
 
 private def messagesOf (body : Json) : Array Json :=
@@ -223,79 +150,55 @@ theorem openai_requestBody_messageCount (config : Config) (history : Array Msg)
   simp only [OpenAI.requestBody, messagesOf_openai]
   cases config.systemPrompt <;> simp <;> omega
 
-/-- Converse nests the reply a level deeper than Anthropic does, so the round-trip theorems below
-have to rebuild that envelope rather than hand `msgJson`'s output straight back. -/
+/-- Converse nests the reply a level deeper than Anthropic does, so the round-trip theorem below
+has to rebuild that envelope rather than hand `msgJson`'s output straight back. -/
 private def responseOf (message : Json) : Json :=
   Json.mkObj [("output", Json.mkObj [("message", message)])]
 
-/-- Bedrock's response reader reaches through the `output`/`message` envelope to the content
-blocks the encoder produced. The Bedrock round-trip theorems wrap an encoded message in that
-envelope and read it back, and this is what makes the reading they perform the real one rather
-than one on an object the reader never receives.
+private def onConverse : Block → Bool
+  | .text t => !t.isEmpty
+  | .toolCall _ => true
+  | _ => false
 
-`r` stands for whatever the `role` field holds, so the claim is independent of the role, and `a`
-is the block array under `content`. `Bedrock.contentOf` walks `output`, then `message`, then
-`content`, and asks for an array, returning `#[]` if any step fails; the statement is that on this
-envelope every step succeeds and the result is `a` itself. -/
-private theorem contentOf_responseOf (r : Json) (a : Array Json) :
-    Bedrock.contentOf (responseOf (Json.mkObj [("role", r), ("content", Json.arr a)])) = a := rfl
+/-- One block written for Converse and read back is the block it was, when Converse carries it at
+all. The round trip of a whole turn below is this, block by block.
 
-/-- Reading Converse tool calls out of a run of blocks does not depend on where that run is split,
-just as it does not for the Messages API. The Bedrock round-trip theorem builds content as a text
-block followed by tool-use blocks and needs to take the two halves separately.
+`b` ranges over every `Block`. `Bedrock.blockJson` answers `none` for a block it omits and the JSON
+otherwise, and `Option.bind` feeds that JSON to `Bedrock.readBlock`. `onConverse` answers `true`
+for a non-empty text block and for a tool call, and the claim is that those come back as
+themselves and every other block, thinking and empty text, as `none`. -/
+private theorem bedrock_block_roundTrip (b : Block) :
+    (Bedrock.blockJson b).bind Bedrock.readBlock = if onConverse b then some b else none := by
+  cases b with
+  | text t =>
+    by_cases h : t.isEmpty
+    · simp [Bedrock.blockJson, onConverse, h]
+    · simp only [Bedrock.blockJson, onConverse, h]
+      show (if t.isEmpty = true then none else some (Block.text t)) = _
+      simp [h]
+  | toolCall tc => cases tc; rfl
+  | thinking => rfl
+  | redactedThinking => rfl
 
-`x` and `y` are arbitrary block arrays, well-formed or not. The claim is that
-`Bedrock.extractToolCalls` of `x ++ y` equals its result on `x` appended to its result on `y`,
-which holds because it is a `filterMap` and so decides each block on that block alone. Neither
-array need be non-empty, and since both are arbitrary nothing rests on an empty case. -/
-private theorem bedrock_extractToolCalls_append (x y : Array Json) :
-    Bedrock.extractToolCalls (x ++ y) =
-      Bedrock.extractToolCalls x ++ Bedrock.extractToolCalls y := by
-  simp [Bedrock.extractToolCalls, Array.filterMap_append]
+/-- An assistant turn written for Converse and read back as a response keeps its text and its tool
+calls, unchanged and in order. A caller dispatching on `ToolCall.name` and answering with
+`ToolCall.id` is therefore working from what the model asked for, and the prose it reads is what
+the model wrote.
 
-/-- Every text block Bedrock sends back survives the encode/decode round trip, concatenated in
-order and with the tool-call blocks contributing nothing. As for Claude, the text a caller reads
-off `Reply` is exactly what the model wrote, and a turn that also asks for tools cannot corrupt
-it.
-
-`text` is the assistant turn's prose and `tcs` the calls it requests. `msgJson` encodes both into
-a Converse message, `responseOf` puts it in the envelope a response arrives in, `contentOf` takes
-the blocks back out, and `extractText` concatenates the `text` field of every block that has one.
-Converse blocks carry no discriminating type, so what makes the tool-use blocks contribute nothing
-is that they have no `text` key at all rather than a type test. `text` may be empty, in which case
-the encoder emits no text block and the theorem still asserts `""`; the proof splits on that
-case. -/
-theorem bedrock_extractText_roundTrip (text : String) (tcs : Array ToolCall) :
-    Bedrock.extractText (Bedrock.contentOf (responseOf (Bedrock.msgJson (.assistant text tcs)))) =
-      text := by
-  simp only [Bedrock.msgJson, contentOf_responseOf, Bedrock.extractText]
-  rw [Array.foldl_append, foldl_map_eq_init _ _ _ _ (by intro b tc; rfl)]
-  split
-  · simp_all [String.isEmpty_iff]
-  · rfl
-
-/-- Every tool call survives the Converse encode/decode round trip unchanged and in order,
-whatever text accompanies it. A caller dispatching on `ToolCall.name` and answering with
-`ToolCall.id` is therefore working from what the model actually asked for.
-
-`tcs` are the calls the assistant turn requests and `text` the prose alongside them.
-`toolCallJson` writes each call as a `toolUse` block, `responseOf` and `contentOf` carry it
-through the response envelope and back, and `extractToolCalls` keeps the blocks with a `toolUse`
-key whose `toolUseId` and `name` are strings, rebuilding a `ToolCall` from each. The claim is
-equality with `tcs` itself: nothing is dropped by that check, nothing reordered, and the text block
-yields none. `tcs` may be empty, but the mapping lemma applied holds at every length. -/
-theorem bedrock_extractToolCalls_roundTrip (text : String) (tcs : Array ToolCall) :
-    Bedrock.extractToolCalls
-      (Bedrock.contentOf (responseOf (Bedrock.msgJson (.assistant text tcs)))) = tcs := by
-  simp only [Bedrock.msgJson, contentOf_responseOf]
-  rw [bedrock_extractToolCalls_append]
-  rw [show Bedrock.extractToolCalls (tcs.map Bedrock.toolCallJson) = tcs from
-    filterMap_map_id _ _ _ (fun _ => rfl)]
-  split
-  · rw [show Bedrock.extractToolCalls (#[] : Array Json) = #[] from rfl]
-    simp
-  · rw [show Bedrock.extractToolCalls #[Json.mkObj [("text", Json.str text)]] = #[] from rfl]
-    simp
+`content` is any sequence of blocks. `msgJson` encodes it, `responseOf` puts it in the envelope a
+response arrives in, `contentOf` takes the blocks back out and `extractContent` reads each one.
+The claim is that this yields `content` filtered to what `onConverse` accepts: non-empty text and
+tool calls, in their original order. Thinking is dropped by design, since Converse carries
+reasoning in a shape of its own. -/
+theorem bedrock_content_roundTrip (content : Array Block) :
+    Bedrock.extractContent (Bedrock.contentOf (responseOf (Bedrock.msgJson (.assistant content)))) =
+      content.filter onConverse := by
+  show (content.filterMap Bedrock.blockJson).filterMap Bedrock.readBlock = _
+  rw [Array.filterMap_filterMap]
+  simp only [bedrock_block_roundTrip]
+  rw [← Array.filterMap_eq_filter]
+  congr 1
+  all_goals first | rfl | (funext b; cases h : onConverse b <;> simp [Option.guard, h])
 
 /-- No `Msg` can encode to a role Converse will not accept. The role is fixed vocabulary here too,
 and a value outside it fails the request rather than one turn of it.
@@ -413,5 +316,144 @@ theorem bedrock_parseReply_ok_only_2xx (status : UInt32) (body : ByteArray) (r :
   split at h
   · simp_all
   · cases h
+
+private def resultId? : Msg → Option String
+  | .toolResult id .. => some id
+  | _ => none
+
+/-- Answering a turn's tool calls adds exactly one tool result per call, in the order of the calls,
+each carrying its call's id. The APIs require a result for every call a turn makes, matched by id,
+so a result dropped, duplicated or misattributed fails the next request or tells the model
+something about the wrong call.
+
+`history` is what came before and `results` pairs each call with its outcome. The claim is that
+`appendResults` leaves `history` as it was and appends some array `added`, and that mapping
+`resultId?` over `added` gives `some` of each call's id in turn. `resultId?` answers `some` only
+for a `.toolResult`, and two arrays are equal under `map` only when they are the same length, so
+every appended message is a tool result and there is one per call. -/
+theorem appendResults_ids (history : Array Msg) (results : Array (ToolCall × ToolOutcome)) :
+    ∃ added, appendResults history results = history ++ added ∧
+      added.map resultId? = results.map (fun r => some r.1.id) := by
+  refine ⟨_, rfl, ?_⟩
+  rw [Array.map_map]
+  congr 1; funext ⟨c, o⟩
+  rcases o with _ | ⟨_, _⟩ <;> rfl
+
+private def resultIsError? : Msg → Option Bool
+  | .toolResult _ _ isError _ => some isError
+  | _ => none
+
+private def failed : ToolOutcome → Bool
+  | .error _ => true
+  | .ok _ => false
+
+/-- A tool result is flagged as an error exactly when its call failed. A failure that lost its
+flag would reach the model as a success carrying error text, and a success flagged as a failure
+would have the model retry what already worked.
+
+`history` and `results` are as for the theorem above, and `added` again is what is appended.
+`resultIsError?` reads the flag off a `.toolResult`, and `failed` answers `true` for an outcome
+that is `.error`. The claim is that the flags of `added` are the failures of `results`, position
+by position, so neither a failure nor a success can come out the other way. -/
+theorem appendResults_isError (history : Array Msg) (results : Array (ToolCall × ToolOutcome)) :
+    ∃ added, appendResults history results = history ++ added ∧
+      added.map resultIsError? = results.map (fun r => some (failed r.2)) := by
+  refine ⟨_, rfl, ?_⟩
+  rw [Array.map_map]
+  congr 1; funext ⟨c, o⟩
+  rcases o with _ | ⟨_, _⟩ <;> rfl
+
+/-- A reply that asks for no tools, or that the model refused, or that was cut off, ends the turn.
+Running tools on a refusal or a truncated reply would act on a request the model did not finish
+making, and a reply without tool calls has nothing left to run.
+
+`turn` is any turn and `reply` any reply meeting the hypothesis: its tool calls are empty, or
+`isRefusal` or `isTruncated` is set. The claim is that `Turn.receive` answers `.done` with some
+history and text, so neither `.runTools` nor `.send`. The hypothesis is a disjunction a reply
+meets in any of three independent ways, none of which is impossible. -/
+theorem receive_ends (turn : Turn) (reply : Reply)
+    (h : reply.toolCalls.isEmpty ∨ reply.isRefusal ∨ reply.isTruncated) :
+    ∃ history text, turn.receive reply = .done history text := by
+  unfold Turn.receive
+  repeat' split
+  all_goals first | exact ⟨_, _, rfl⟩ | simp_all
+
+/-- A closed-off history never ends on a tool result. The APIs require roles to alternate, so a
+history ending on a tool result cannot be continued with a user turn; this is what makes it safe
+to replay.
+
+`history` is any history and `text` the closing assistant turn's text. `back?` is the last message,
+or `none` for an empty history. The claim is that for every id, output, flag and structured value,
+the last message of the result is not that tool result, which is to say it is not a tool result
+at all. -/
+theorem closeOff_end (history : Array Msg) (text : String) :
+    ∀ id output isError structured,
+      (closeOff history text).back? ≠ some (.toolResult id output isError structured) := by
+  intro id output isError structured
+  unfold closeOff
+  split
+  · simp
+  · next h => exact fun e => h id output isError structured e
+
+/-- Closing off a history only ever appends to it. Every message in it happened, its tool results
+included, and a closing step that dropped or rewrote one would lose a record of what was done.
+
+`history` and `text` are as above. The claim is that the result is `history` followed by some
+`suffix`, so every message of `history` survives in place. -/
+theorem closeOff_prefix (history : Array Msg) (text : String) :
+    ∃ suffix, closeOff history text = history ++ suffix := by
+  unfold closeOff
+  split
+  · exact ⟨#[_], rfl⟩
+  · exact ⟨#[], by simp⟩
+
+/-- A history that does not end on a tool result is left exactly as it is. Closing one off would
+add an assistant turn after an assistant turn, which the APIs reject just as they reject a history
+left ending on tool results.
+
+`history` meets the hypothesis that its last message is no tool result, whatever its fields, and
+an empty history meets it too. The claim is that `closeOff` returns `history` itself. -/
+theorem closeOff_id (history : Array Msg) (text : String)
+    (h : ∀ id output isError structured,
+      history.back? ≠ some (.toolResult id output isError structured)) :
+    closeOff history text = history := by
+  unfold closeOff
+  split
+  · next e => exact absurd e (h _ _ _ _)
+  · rfl
+
+/-- A block encoded for storage and decoded again is the block it was. The message round trip
+below rests on it for the content of an assistant turn.
+
+`b` ranges over every `Block`. `Block.toJson` writes it and `Block.fromJson?` reads it, and the
+claim is `.ok b`, every field included, a tool call's arbitrary `input` among them. -/
+private theorem block_roundTrip (b : Block) : Block.fromJson? (Block.toJson b) = .ok b := by
+  cases b with
+  | toolCall tc => cases tc; rfl
+  | _ => rfl
+
+/-- Any message encoded for storage and decoded again is the message it was. A caller that keeps a
+conversation and replays it later depends on getting back what it stored, thinking signatures,
+error flags and structured results included, since a replayed turn that differs from the original
+changes what the model is told.
+
+`m` ranges over every `Msg`, with no side condition: `Msg.toJson` writes it and `Msg.fromJson?`
+reads it, and the claim is `.ok m`. That covers a `structured` of `some Json.null`, which a codec
+writing `none` as `null` would read back as `none`. The claim is about `Json` values; that text
+printed with `compress` parses back to the same value is lean-json's to establish, not proved
+here. -/
+theorem msg_roundTrip (m : Msg) : Msg.fromJson? (Msg.toJson m) = .ok m := by
+  cases m with
+  | user => rfl
+  | assistant content =>
+    show (do let bs ← (Array.map Block.toJson content).mapM Block.fromJson?
+             pure (Msg.assistant bs)) = _
+    rw [Array.mapM_map]
+    simp only [Function.comp_def, block_roundTrip]
+    have : content.mapM (m := Except String) (fun x => pure x) = pure content := by
+      simpa using Array.mapM_pure (m := Except String) (f := id) (xs := content)
+    show Msg.assistant <$> content.mapM (m := Except String) (fun x => pure x) = _
+    rw [this]; rfl
+  | toolResult id output isError structured => cases isError <;> cases structured <;> rfl
 
 end LLMClient.Test

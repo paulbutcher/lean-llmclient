@@ -8,3 +8,4 @@ public import LLMClient.OpenAI
 public import LLMClient.Claude
 public import LLMClient.Bedrock
 public import LLMClient.Conversation
+public import LLMClient.Storage

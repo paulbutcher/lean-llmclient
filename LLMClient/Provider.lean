@@ -35,11 +35,41 @@ structure ToolCall where
   input : Json := Json.mkObj []
 deriving Inhabited, BEq
 
+/-- One piece of an assistant turn. A turn is kept as the blocks the model produced, in the order it
+produced them, because Claude binds each thinking block to everything before it: a turn replayed
+with its text merged or its blocks reordered invalidates the reasoning that follows. -/
+inductive Block where
+  | text (text : String)
+  | toolCall (call : LLMClient.ToolCall)
+  /-- Claude's reasoning, replayed unchanged so that the model keeps it across the tool calls of a
+  turn. `thinking` is empty unless the request asked to display it; `signature` is what the API
+  checks. Only Claude reads these; the other providers drop them, which the APIs permit. -/
+  | thinking (thinking signature : String)
+  /-- Reasoning the API returns encrypted, replayed unchanged for the same reason. -/
+  | redactedThinking (data : String)
+deriving Inhabited, BEq
+
+namespace Block
+
+/-- The prose of a turn: its text blocks, concatenated. -/
+def joinText (content : Array Block) : String :=
+  content.foldl (init := "") fun acc b =>
+    match b with
+    | .text t => acc ++ t
+    | _ => acc
+
+def toolCalls (content : Array Block) : Array LLMClient.ToolCall :=
+  content.filterMap fun
+    | .toolCall call => some call
+    | _ => none
+
+end Block
+
 /-- One turn of the conversation, independent of any provider's wire format. Callers persist
 this and replay it on the next request. -/
 inductive Msg where
   | user (text : String)
-  | assistant (text : String) (toolCalls : Array LLMClient.ToolCall := #[])
+  | assistant (content : Array LLMClient.Block)
   /-- `structured` is the same answer as `output`, as JSON, for the providers whose wire format can
   carry one; the rest send `output`, which says the same thing with a layer of escaping. A caller
   persisting history need only keep `output`, since replaying without `structured` loses nothing
@@ -52,11 +82,14 @@ deriving Inhabited, BEq
 `Response`) since callers such as HTTP servers typically have their own `Response` type in
 scope. -/
 structure Reply where
-  text : String := ""
-  toolCalls : Array LLMClient.ToolCall := #[]
+  content : Array LLMClient.Block := #[]
   isRefusal : Bool := false
   isTruncated : Bool := false
 deriving Inhabited
+
+def Reply.text (r : Reply) : String := Block.joinText r.content
+
+def Reply.toolCalls (r : Reply) : Array LLMClient.ToolCall := Block.toolCalls r.content
 
 /-- Tunable parameters for a request/response round trip. `apiUrl` and `model` have no
 sensible cross-provider default, so each provider supplies its own `defaultConfig`. -/

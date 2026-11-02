@@ -6,6 +6,7 @@ import LLMClient.OpenAI
 import LLMClient.Claude
 import LLMClient.Bedrock
 import LLMClient.Conversation
+import LLMClient.Storage
 import Theorems
 
 /-- Collects every failing check by name instead of aborting at the first one, so a single run
@@ -40,16 +41,16 @@ def testOpenAI (r : Results) : Results :=
     |>.check "msgJson user"
       (msgJson (.user "hi") == Json.mkObj [("role", "user"), ("content", "hi")])
     |>.check "msgJson assistant text only"
-      (msgJson (.assistant "hello" #[]) == Json.mkObj [("role", "assistant"), ("content", "hello")])
+      (msgJson (.assistant #[.text "hello"]) == Json.mkObj [("role", "assistant"), ("content", "hello")])
     |>.check "msgJson assistant no text no tools"
-      (msgJson (.assistant "" #[]) == Json.mkObj [("role", "assistant"), ("content", Json.null)])
+      (msgJson (.assistant #[]) == Json.mkObj [("role", "assistant"), ("content", Json.null)])
     |>.check "msgJson assistant tool call only"
-      (msgJson (.assistant "" #[sampleToolCall]) ==
+      (msgJson (.assistant #[.toolCall sampleToolCall]) ==
         Json.mkObj
           [ ("role", "assistant"), ("content", Json.null),
             ("tool_calls", Json.arr #[toolCallJson sampleToolCall]) ])
     |>.check "msgJson assistant text and tool call"
-      (msgJson (.assistant "hi" #[sampleToolCall]) ==
+      (msgJson (.assistant #[.text "hi", .toolCall sampleToolCall]) ==
         Json.mkObj
           [ ("role", "assistant"), ("content", "hi"),
             ("tool_calls", Json.arr #[toolCallJson sampleToolCall]) ])
@@ -140,12 +141,12 @@ def testClaude (r : Results) : Results :=
     |>.check "msgJson user"
       (msgJson (.user "hi") == Json.mkObj [("role", "user"), ("content", "hi")])
     |>.check "msgJson assistant text only"
-      (msgJson (.assistant "hello" #[]) ==
+      (msgJson (.assistant #[.text "hello"]) ==
         Json.mkObj
           [ ("role", "assistant"),
             ("content", Json.arr #[Json.mkObj [("type", "text"), ("text", "hello")]]) ])
     |>.check "msgJson assistant tool call only"
-      (msgJson (.assistant "" #[sampleToolCall]) ==
+      (msgJson (.assistant #[.toolCall sampleToolCall]) ==
         Json.mkObj
           [ ("role", "assistant"),
             ("content", Json.arr
@@ -153,7 +154,7 @@ def testClaude (r : Results) : Results :=
                   [ ("type", "tool_use"), ("id", sampleToolCall.id), ("name", sampleToolCall.name),
                     ("input", sampleToolCall.input) ]]) ])
     |>.check "msgJson assistant text and tool call"
-      (msgJson (.assistant "hi" #[sampleToolCall]) ==
+      (msgJson (.assistant #[.text "hi", .toolCall sampleToolCall]) ==
         Json.mkObj
           [ ("role", "assistant"),
             ("content", Json.arr
@@ -200,11 +201,11 @@ def testClaude (r : Results) : Results :=
       (stopReasonOf maxTokensResp == "max_tokens")
     |>.check "stopReasonOf on malformed response"
       (stopReasonOf malformedResp == "")
-    |>.check "extractText concatenates only text blocks in order"
-      (extractText content == "Hello world")
-    |>.check "extractToolCalls skips entries missing id, keeps well-formed ones"
-      (extractToolCalls content ==
-        #[({ id := "call_1", name := "get_weather", input := Json.mkObj [("city", "Paris")] } : LLMClient.ToolCall)])
+    |>.check "extractContent keeps text and tool calls in order, skipping a tool call missing its id"
+      (extractContent content ==
+        #[.text "Hello ",
+          .toolCall { id := "call_1", name := "get_weather", input := Json.mkObj [("city", "Paris")] },
+          .text "world"])
     |>.check "errorMessageOf on error response"
       (errorMessageOf errorResp == "boom")
     |>.check "errorMessageOf falls back to compress on malformed response"
@@ -242,11 +243,11 @@ def testConverseLoop (r : Results) : IO Results := do
   -- is exercised too.
   let provider1 : LLMClient.Provider IO :=
     { name := "fake"
-      sendRequest := fun _ _ => pure (.ok ({ text := "hello", toolCalls := #[] } : LLMClient.Reply)) }
+      sendRequest := fun _ _ => pure (.ok ({ content := #[.text "hello"] } : LLMClient.Reply)) }
   let result1 ← LLMClient.converseLoop provider1 #[] #[LLMClient.Msg.user "hi"]
   let r := r.check "converseLoop: no tool calls returns immediately (default LoopConfig)"
     (match result1 with
-      | .ok (h, t) => h == #[LLMClient.Msg.user "hi", LLMClient.Msg.assistant "hello" #[]] && t == "hello"
+      | .ok (h, t) => h == #[LLMClient.Msg.user "hi", LLMClient.Msg.assistant #[.text "hello"]] && t == "hello"
       | .error _ => false)
 
   let callCount ← IO.mkRef (0 : Nat)
@@ -260,9 +261,9 @@ def testConverseLoop (r : Results) : IO Results := do
         let n ← callCount.get
         callCount.set (n + 1)
         if n == 0 then
-          pure (.ok ({ text := "", toolCalls := #[toolCall] } : LLMClient.Reply))
+          pure (.ok ({ content := #[.toolCall toolCall] } : LLMClient.Reply))
         else
-          pure (.ok ({ text := "final answer", toolCalls := #[] } : LLMClient.Reply)) }
+          pure (.ok ({ content := #[.text "final answer"] } : LLMClient.Reply)) }
   let inputsSeen ← IO.mkRef (#[] : Array Json)
   let tools2 := #[sampleToolImpl fun input => do
     inputsSeen.modify (·.push input)
@@ -272,9 +273,9 @@ def testConverseLoop (r : Results) : IO Results := do
   let result2 ← LLMClient.converseLoop provider2 tools2 #[LLMClient.Msg.user "weather?"] config2
   let expectedHistory2 : Array LLMClient.Msg :=
     #[ LLMClient.Msg.user "weather?",
-       LLMClient.Msg.assistant "" #[toolCall],
+       LLMClient.Msg.assistant #[.toolCall toolCall],
        LLMClient.Msg.toolResult "call_1" "15°C, cloudy",
-       LLMClient.Msg.assistant "final answer" #[] ]
+       LLMClient.Msg.assistant #[.text "final answer"] ]
   let r := r.check "converseLoop: tool round trip ends with the final text and a toolResult in history"
     (match result2 with
       | .ok (h, t) => h == expectedHistory2 && t == "final answer"
@@ -300,8 +301,8 @@ def testConverseLoop (r : Results) : IO Results := do
       sendRequest := fun _ _ => do
         let n ← unknownCount.get
         unknownCount.set (n + 1)
-        if n == 0 then pure (.ok ({ toolCalls := #[unknownCall] } : LLMClient.Reply))
-        else pure (.ok ({ text := "my mistake" } : LLMClient.Reply)) }
+        if n == 0 then pure (.ok ({ content := #[.toolCall unknownCall] } : LLMClient.Reply))
+        else pure (.ok ({ content := #[.text "my mistake"] } : LLMClient.Reply)) }
   let realToolRan ← IO.mkRef false
   let resultUnknown ←
     LLMClient.converseLoop providerUnknown
@@ -330,8 +331,8 @@ def testConverseLoop (r : Results) : IO Results := do
       sendRequest := fun _ _ => do
         let n ← failingCount.get
         failingCount.set (n + 1)
-        if n == 0 then pure (.ok ({ toolCalls := #[toolCall] } : LLMClient.Reply))
-        else pure (.ok ({ text := "I couldn't find out" } : LLMClient.Reply)) }
+        if n == 0 then pure (.ok ({ content := #[.toolCall toolCall] } : LLMClient.Reply))
+        else pure (.ok ({ content := #[.text "I couldn't find out"] } : LLMClient.Reply)) }
   let resultFailing ←
     LLMClient.converseLoop providerFailingTool
       #[sampleToolImpl fun _ => pure (.error "the weather service is down")]
@@ -355,8 +356,8 @@ def testConverseLoop (r : Results) : IO Results := do
       sendRequest := fun _ _ => do
         let n ← structuredCount.get
         structuredCount.set (n + 1)
-        if n == 0 then pure (.ok ({ toolCalls := #[toolCall] } : LLMClient.Reply))
-        else pure (.ok ({ text := "it is cloudy" } : LLMClient.Reply)) }
+        if n == 0 then pure (.ok ({ content := #[.toolCall toolCall] } : LLMClient.Reply))
+        else pure (.ok ({ content := #[.text "it is cloudy"] } : LLMClient.Reply)) }
   let plainRan ← IO.mkRef false
   let answer := Json.mkObj [("tempC", Json.ofNat 15), ("sky", "cloudy")]
   let resultStructured ←
@@ -377,7 +378,7 @@ def testConverseLoop (r : Results) : IO Results := do
   let providerRefusal : LLMClient.Provider IO :=
     { name := "fake"
       sendRequest := fun _ _ =>
-        pure (.ok ({ text := "", toolCalls := #[], isRefusal := true } : LLMClient.Reply)) }
+        pure (.ok ({ isRefusal := true } : LLMClient.Reply)) }
   let toolsNeverRun := #[sampleToolImpl fun _ => refusalToolCalled.set true *> pure (.ok "unused")]
   let resultRefusal ←
     LLMClient.converseLoop providerRefusal toolsNeverRun #[LLMClient.Msg.user "hi"]
@@ -392,7 +393,7 @@ def testConverseLoop (r : Results) : IO Results := do
   let providerTruncated : LLMClient.Provider IO :=
     { name := "fake"
       sendRequest := fun _ _ =>
-        pure (.ok ({ text := "", toolCalls := #[], isTruncated := true } : LLMClient.Reply)) }
+        pure (.ok ({ isTruncated := true } : LLMClient.Reply)) }
   let resultTruncated ←
     LLMClient.converseLoop providerTruncated
       #[sampleToolImpl fun _ => truncatedToolCalled.set true *> pure (.ok "unused")]
@@ -411,14 +412,14 @@ def testConverseLoop (r : Results) : IO Results := do
     { name := "fake"
       sendRequest := fun _ _ =>
         exhaustedProviderCalled.set true *>
-          pure (.ok ({ text := "hello", toolCalls := #[] } : LLMClient.Reply)) }
+          pure (.ok ({ content := #[.text "hello"] } : LLMClient.Reply)) }
   let resultExhausted ←
     LLMClient.converseLoop providerExhausted #[] #[LLMClient.Msg.user "hi"]
       ({ maxIterations := 0 } : LLMClient.LoopConfig IO)
   let giveUpText := "The model kept calling tools without finishing; giving up."
   let r := r.check "converseLoop: maxIterations := 0 gives up as .ok with the giving-up message"
     (match resultExhausted with
-      | .ok (h, t) => h == #[LLMClient.Msg.user "hi", LLMClient.Msg.assistant giveUpText] && t == giveUpText
+      | .ok (h, t) => h == #[LLMClient.Msg.user "hi", LLMClient.Msg.assistant #[.text giveUpText]] && t == giveUpText
       | .error _ => false)
   let exhaustedProviderCalled ← exhaustedProviderCalled.get
   let r := r.check "converseLoop: exhausting maxIterations := 0 never calls the provider" (!exhaustedProviderCalled)
@@ -432,7 +433,7 @@ def testConverseLoop (r : Results) : IO Results := do
         let n ← alwaysToolCallCount.get
         alwaysToolCallCount.set (n + 1)
         let tc : LLMClient.ToolCall := { id := s!"call_{n}", name := "get_weather", input := Json.mkObj [("city", "Paris")] }
-        pure (.ok ({ text := "", toolCalls := #[tc] } : LLMClient.Reply)) }
+        pure (.ok ({ content := #[.toolCall tc] } : LLMClient.Reply)) }
   let runToolAlwaysCalled ← IO.mkRef (0 : Nat)
   let toolsAlways := #[sampleToolImpl fun _ =>
     runToolAlwaysCalled.modify (· + 1) *> pure (.ok "15°C, cloudy")]
@@ -449,7 +450,7 @@ def testConverseLoop (r : Results) : IO Results := do
       | .error _ => false)
   let r := r.check "converseLoop: exhausted history has the first round's tool call still present"
     (match resultBudget with
-      | .ok (h, _) => h.getD 1 (LLMClient.Msg.user "") == LLMClient.Msg.assistant "" #[firstToolCall]
+      | .ok (h, _) => h.getD 1 (LLMClient.Msg.user "") == LLMClient.Msg.assistant #[.toolCall firstToolCall]
       | .error _ => false)
   let r := r.check "converseLoop: exhausted history has the first round's tool result still present"
     (match resultBudget with
@@ -457,7 +458,7 @@ def testConverseLoop (r : Results) : IO Results := do
       | .error _ => false)
   let r := r.check "converseLoop: exhausted history's last entry is the giving-up assistant message"
     (match resultBudget with
-      | .ok (h, _) => h.back? == some (LLMClient.Msg.assistant giveUpText)
+      | .ok (h, _) => h.back? == some (LLMClient.Msg.assistant #[.text giveUpText])
       | .error _ => false)
   let r := r.check "converseLoop: exhausted reply text matches the giving-up message"
     (match resultBudget with
@@ -490,7 +491,7 @@ def testConverseLoop (r : Results) : IO Results := do
       sendRequest := fun _ _ => do
         let n ← lateCount.get
         lateCount.set (n + 1)
-        if n == 0 then pure (.ok ({ text := "", toolCalls := #[toolCall] } : LLMClient.Reply))
+        if n == 0 then pure (.ok ({ content := #[.toolCall toolCall] } : LLMClient.Reply))
         else pure (.error "the connection dropped") }
   let resultLate ←
     LLMClient.converseLoop providerLateError #[sampleToolImpl fun _ => pure (.ok "15°C, cloudy")]
@@ -500,7 +501,7 @@ def testConverseLoop (r : Results) : IO Results := do
       | .error e =>
         e.history ==
           #[ LLMClient.Msg.user "weather?",
-             LLMClient.Msg.assistant "" #[toolCall],
+             LLMClient.Msg.assistant #[.toolCall toolCall],
              LLMClient.Msg.toolResult "call_1" "15°C, cloudy" ]
       | .ok _ => false)
 
@@ -511,9 +512,9 @@ the Converse and Messages APIs answer that with a *single* user message carrying
 reject a message per result. -/
 def twoCallHistory : Array LLMClient.Msg :=
   #[ .user "delete them",
-     .assistant ""
-       #[ { id := "call_1", name := "delete_todo", input := Json.mkObj [("id", Json.ofNat 1)] },
-          { id := "call_2", name := "delete_todo", input := Json.mkObj [("id", Json.ofNat 2)] } ],
+     .assistant
+       #[ .toolCall { id := "call_1", name := "delete_todo", input := Json.mkObj [("id", Json.ofNat 1)] },
+          .toolCall { id := "call_2", name := "delete_todo", input := Json.mkObj [("id", Json.ofNat 2)] } ],
      .toolResult "call_1" "deleted 1",
      .toolResult "call_2" "deleted 2" ]
 
@@ -643,11 +644,11 @@ def testBedrock (r : Results) : Results :=
       (msgJson (.user "hi") ==
         Json.mkObj [("role", "user"), ("content", Json.arr #[Json.mkObj [("text", "hi")]])])
     |>.check "msgJson assistant text only"
-      (msgJson (.assistant "hello" #[]) ==
+      (msgJson (.assistant #[.text "hello"]) ==
         Json.mkObj
           [ ("role", "assistant"), ("content", Json.arr #[Json.mkObj [("text", "hello")]]) ])
     |>.check "msgJson assistant tool call only"
-      (msgJson (.assistant "" #[sampleToolCall]) ==
+      (msgJson (.assistant #[.toolCall sampleToolCall]) ==
         Json.mkObj
           [ ("role", "assistant"),
             ("content", Json.arr
@@ -656,7 +657,7 @@ def testBedrock (r : Results) : Results :=
                       [ ("toolUseId", sampleToolCall.id), ("name", sampleToolCall.name),
                         ("input", sampleToolCall.input) ]) ]]) ])
     |>.check "msgJson assistant text and tool call"
-      (msgJson (.assistant "hi" #[sampleToolCall]) ==
+      (msgJson (.assistant #[.text "hi", .toolCall sampleToolCall]) ==
         Json.mkObj
           [ ("role", "assistant"),
             ("content", Json.arr
@@ -705,12 +706,14 @@ def testBedrock (r : Results) : Results :=
       (stopReasonOf (respWith "max_tokens" #[]) == "max_tokens")
     |>.check "stopReasonOf on malformed response"
       (stopReasonOf malformedResp == "")
-    |>.check "extractText concatenates only text blocks in order"
-      (extractText content == "Hello world")
-    |>.check "extractToolCalls skips entries missing toolUseId, keeps well-formed ones"
-      (extractToolCalls content ==
-        #[({ id := "call_1", name := "get_weather",
-             input := Json.mkObj [("city", "Paris")] } : LLMClient.ToolCall)])
+    |>.check "extractContent keeps text and tool calls in order, skipping a tool use missing its id"
+      (extractContent content ==
+        #[.text "Hello ",
+          .toolCall { id := "call_1", name := "get_weather", input := Json.mkObj [("city", "Paris")] },
+          .text "world"])
+    |>.check "msgJson drops thinking blocks, which Converse does not take in Claude's shape"
+      (msgJson (.assistant #[.thinking "hmm" "sig", .redactedThinking "x", .text "hi"]) ==
+        msgJson (.assistant #[.text "hi"]))
     |>.check "errorMessageOf reads the top-level message Bedrock returns"
       (errorMessageOf errorResp == "boom")
     |>.check "errorMessageOf falls back to compress on malformed response"
@@ -891,6 +894,140 @@ def testPureMonad (r : Results) : Results :=
   r.check "converseLoop runs over a provider in a monad other than IO"
     (match result with | .ok (_, text) => text == "hello" | .error _ => false)
 
+/-- Claude binds each thinking block to everything before it, so a turn has to go back out block for
+block as it came in: reasoning kept, text not merged, nothing reordered. -/
+def testClaudeThinking (r : Results) : Results :=
+  open LLMClient.Claude in
+  let content : Array Json :=
+    #[ Json.mkObj [("type", "thinking"), ("thinking", ""), ("signature", "sig1")],
+       Json.mkObj [("type", "text"), ("text", "Let me look. ")],
+       Json.mkObj [("type", "tool_use"), ("id", "call_1"), ("name", "list_todos"),
+         ("input", Json.mkObj [])],
+       Json.mkObj [("type", "thinking"), ("thinking", "and the other"), ("signature", "sig2")],
+       Json.mkObj [("type", "text"), ("text", "And this.")],
+       Json.mkObj [("type", "redacted_thinking"), ("data", "opaque")],
+       Json.mkObj [("type", "tool_use"), ("id", "call_2"), ("name", "list_todos"),
+         ("input", Json.mkObj [])] ]
+  let body := Json.mkObj [("content", Json.arr content), ("stop_reason", "tool_use")]
+  let reply := parseReply 200 body.compress.toUTF8
+  let replayed : Option Json := match reply with
+    | .ok reply => some (msgJson (.assistant reply.content))
+    | .error _ => none
+  let unsigned := Json.mkObj [("type", "thinking"), ("thinking", "no signature")]
+  r
+    |>.check "Claude: a turn with thinking replays block for block as it arrived"
+      (replayed == some (Json.mkObj [("role", "assistant"), ("content", Json.arr content)]))
+    |>.check "Claude: a reply's text and tool calls are read across the blocks between them"
+      (match reply with
+        | .ok reply => reply.text == "Let me look. And this." && reply.toolCalls.map (·.id) == #["call_1", "call_2"]
+        | .error _ => false)
+    |>.check "Claude: a thinking block without a signature is dropped, since it cannot be replayed"
+      (extractContent #[unsigned] == #[])
+    |>.check "OpenAI: thinking blocks are dropped and text blocks joined"
+      (LLMClient.OpenAI.msgJson (.assistant #[.thinking "t" "s", .text "a", .redactedThinking "d", .text "b"]) ==
+        LLMClient.OpenAI.msgJson (.assistant #[.text "ab"]))
+
+def stepCall (id : String) (name := "get_weather") : LLMClient.ToolCall := { id, name }
+
+/-- Drives a turn by hand the way an Elm-style caller does, one pure step at a time, answering each
+request from `replies` in turn. -/
+def driveSteps (replies : Array LLMClient.Reply) (run : LLMClient.ToolCall → LLMClient.ToolOutcome)
+    (step : LLMClient.Step) : Option (Array LLMClient.Msg × String) := Id.run do
+  let mut step := step
+  let mut sent := 0
+  for _ in [0:2 * replies.size + 2] do
+    match step with
+    | .done history text => return some (history, text)
+    | .send turn =>
+      let some reply := replies[sent]? | return none
+      sent := sent + 1
+      step := turn.receive reply
+    | .runTools pending => step := pending.answer run
+  return none
+
+def testSteps (r : Results) : IO Results := do
+  let toolsTurn : LLMClient.Reply := { content := #[.toolCall (stepCall "a"), .toolCall (stepCall "b")] }
+  let final : LLMClient.Reply := { content := #[.text "done"] }
+  let run : LLMClient.ToolCall → LLMClient.ToolOutcome := fun c =>
+    if c.id == "a" then .ok ("A", none) else .error "B failed"
+  let history := #[LLMClient.Msg.user "go"]
+
+  let pendingCalls := match LLMClient.Turn.start history with
+    | .send turn => match turn.receive toolsTurn with
+      | .runTools pending => some (pending.calls.map (·.id), pending.history.back?)
+      | _ => none
+    | _ => none
+  let r := r.check "steps: a reply asking for tools yields its calls, after its assistant turn"
+    (pendingCalls == some (#["a", "b"], some (.assistant toolsTurn.content)))
+
+  let stepped := driveSteps #[toolsTurn, final] run (LLMClient.Turn.start history)
+  let r := r.check "steps: a round trip ends with the final text and a result per call"
+    (stepped == some
+      (#[ .user "go", .assistant toolsTurn.content, .toolResult "a" "A",
+          .toolResult "b" "B failed" true, .assistant final.content ], "done"))
+
+  -- The step functions are the loop's rules, so driving them by hand and running `converseLoop`
+  -- over the same replies must come to the same thing, at every cap.
+  let mut r := r
+  for cap in [0:4] do
+    let replies := #[toolsTurn, toolsTurn, toolsTurn, final]
+    let count ← IO.mkRef 0
+    let provider : LLMClient.Provider IO :=
+      { name := "fake"
+        sendRequest := fun _ _ => do
+          let n ← count.modifyGet fun n => (n, n + 1)
+          pure (.ok (replies.getD n final)) }
+    let tools : Array (LLMClient.ToolImpl IO) :=
+      #[{ tool := { sampleTool with name := "get_weather" }
+          run := fun _ => pure (.ok "A") }]
+    let looped ← LLMClient.converseLoop provider tools history { maxIterations := cap }
+    let byHand := driveSteps replies (fun _ => .ok ("A", none)) (LLMClient.Turn.start history cap)
+    r := r.check s!"steps: converseLoop and the steps agree at maxIterations := {cap}"
+      (match looped with
+        | .ok result => byHand == some result
+        | .error _ => false)
+
+  r := r
+    |>.check "unknownTool? answers a call naming a tool not on offer, as an error naming it"
+      (match LLMClient.unknownTool? #["get_weather"] (stepCall "x" "nope") with
+        | some (.error e) => mentions e "nope"
+        | _ => false)
+    |>.check "unknownTool? leaves a call to a tool on offer to the caller"
+      (LLMClient.unknownTool? #["get_weather"] (stepCall "x")).isNone
+  return r
+
+def testStorage (r : Results) : Results :=
+  let decode (text : String) : Except String LLMClient.Msg :=
+    (Json.parse text).mapError toString >>= LLMClient.Msg.fromJson?
+  let failsMentioning (text needle : String) : Bool :=
+    match decode text with
+    | .error e => mentions e needle
+    | .ok _ => false
+  let sample : Array LLMClient.Msg :=
+    #[ .user "hi",
+       .assistant #[.thinking "" "sig", .text "ok", .toolCall sampleToolCall, .redactedThinking "d"],
+       .toolResult "call_1" "{}" false (some (Json.mkObj [])),
+       .toolResult "call_2" "no" true ]
+  r
+    |>.check "storage: a history survives the text round trip"
+      (match ((Json.parse (Json.ToJson.toJson sample).compress).mapError toString >>=
+          Json.FromJson.fromJson? : Except String (Array LLMClient.Msg)) with
+        | .ok decoded => decoded == sample
+        | .error _ => false)
+    |>.check "storage: a missing field is named"
+      (failsMentioning "{\"role\":\"user\"}" "missing field text")
+    |>.check "storage: an unknown role is named"
+      (failsMentioning "{\"role\":\"system\",\"text\":\"x\"}" "unknown role system")
+    |>.check "storage: an unexpected field is rejected rather than ignored"
+      (failsMentioning "{\"role\":\"user\",\"text\":\"x\",\"txet\":\"y\"}" "unexpected field txet")
+    |>.check "storage: a field of the wrong type is named"
+      (failsMentioning "{\"role\":\"tool_result\",\"id\":\"a\",\"output\":\"b\",\"is_error\":\"no\"}"
+        "is_error should be a boolean")
+    |>.check "storage: is_error is required rather than defaulted"
+      (failsMentioning "{\"role\":\"tool_result\",\"id\":\"a\",\"output\":\"b\"}" "missing field is_error")
+    |>.check "storage: a bad block fails the message that holds it"
+      (failsMentioning "{\"role\":\"assistant\",\"content\":[{\"type\":\"image\"}]}" "unknown type image")
+
 def runAll : IO Results := do
   let r : Results := {}
   let r := testOpenAI r
@@ -905,6 +1042,9 @@ def runAll : IO Results := do
   let r ← testTransport r
   let r := testPureMonad r
   let r := testErrorStatus r
+  let r := testClaudeThinking r
+  let r := testStorage r
+  let r ← testSteps r
   testConverseLoop r
 
 def main : IO UInt32 := do

@@ -30,65 +30,154 @@ calls have changed whatever they change, and a caller that persists conversation
 them or its stored history will disagree with the world.
 
 It is the history including the assistant turn that requested the tools and a result for each,
-so it ends mid-exchange. A caller replaying it to a model has to close it off; what that means
-depends on the API, and for the ones here it means an assistant turn, since they require roles to
-alternate. -/
+so it ends mid-exchange. `closeOff` makes it fit to replay. -/
 structure LoopFailure where
   message : String
   history : Array Msg
 
-/-- A call naming a tool that isn't on offer is answered here rather than passed on, since there
-is nothing to pass it to. `.runningTool` is not reported for it, because nothing runs.
+/-- What running a tool call came to: its output and, for a tool that has one, the same answer as
+JSON; or the text of its failure. -/
+abbrev ToolOutcome := Except String (String × Option Json)
 
-A tool offering `runStructured` is run through that alone, and the string half of the result is
+def toolResultOf (call : ToolCall) : ToolOutcome → Msg
+  | .ok (output, structured) => .toolResult call.id output false structured
+  | .error text => .toolResult call.id text true none
+
+/-- One `.toolResult` per call, in the order given. -/
+def appendResults (history : Array Msg) (results : Array (ToolCall × ToolOutcome)) : Array Msg :=
+  history ++ results.map fun (call, outcome) => toolResultOf call outcome
+
+private def noSuchTool (call : ToolCall) : ToolOutcome :=
+  .error s!"there is no tool called {call.name}"
+
+/-- The answer to a call naming none of `offered`, which is how `converseLoop` answers one without
+reaching the caller; `none` when the tool is on offer. -/
+def unknownTool? (offered : Array String) (call : ToolCall) : Option ToolOutcome :=
+  if offered.contains call.name then none else some (noSuchTool call)
+
+/-- A history about to be sent. Only the step functions build one, so the iteration cap they carry
+cannot be lost or reset between round trips. -/
+structure Turn where
+  private mk ::
+  history : Array Msg
+  iterationsLeft : Nat
+
+/-- Tool calls waiting on their results. `history` ends on the assistant turn that asked for them. -/
+structure Pending where
+  private mk ::
+  history : Array Msg
+  calls : Array ToolCall
+  iterationsLeft : Nat
+
+/-- What a caller driving a turn does next. `.done` carries the history and the text `converseLoop`
+returns: the model's reply, or a fixed message saying why there is none. -/
+inductive Step where
+  /-- Send `turn.history`, and pass the reply to `turn.receive`. -/
+  | send (turn : Turn)
+  /-- Run `pending.calls`, and pass their outcomes to `pending.answer`. -/
+  | runTools (pending : Pending)
+  | done (history : Array Msg) (text : String)
+
+private def giveUp (history : Array Msg) : Step :=
+  let text := "The model kept calling tools without finishing; giving up."
+  .done (history.push (.assistant #[.text text])) text
+
+/-- `maxIterations` bounds the round trips that carry tool results, since a model can in principle
+keep asking for tools forever. At `0` the turn gives up without sending anything. -/
+def Turn.start (history : Array Msg) (maxIterations : Nat := 5) : Step :=
+  match maxIterations with
+  | 0 => giveUp history
+  | n + 1 => .send ⟨history, n + 1⟩
+
+/-- A refusal and a truncation end the turn even when the reply also asks for tools, since a reply
+cut off or declined is no request to act on. -/
+def Turn.receive (turn : Turn) (reply : Reply) : Step :=
+  let history := turn.history.push (.assistant reply.content)
+  if reply.isRefusal then
+    .done history "The model declined to respond to that."
+  else if reply.isTruncated then
+    .done history "The model's reply was cut off before it finished; try again."
+  else if reply.toolCalls.isEmpty then
+    .done history reply.text
+  else
+    .runTools ⟨history, reply.toolCalls, turn.iterationsLeft⟩
+
+/-- `outcomes` answer `pending.calls` position by position. -/
+private def Pending.resume (pending : Pending) (outcomes : Array ToolOutcome) : Step :=
+  let history := appendResults pending.history (pending.calls.zip outcomes)
+  match pending.iterationsLeft - 1 with
+  | 0 => giveUp history
+  | n + 1 => .send ⟨history, n + 1⟩
+
+/-- `run` answers each call; `unknownTool?` answers one naming a tool that is not on offer. -/
+def Pending.answer (pending : Pending) (run : ToolCall → ToolOutcome) : Step :=
+  pending.resume (pending.calls.map run)
+
+private def Step.measure : Step → Nat
+  | .send turn => 2 * turn.iterationsLeft + 2
+  | .runTools pending => 2 * pending.iterationsLeft + 1
+  | .done _ _ => 0
+
+private theorem Turn.receive_measure (turn : Turn) (reply : Reply) :
+    (turn.receive reply).measure < (Step.send turn).measure := by
+  unfold Turn.receive
+  repeat' split
+  all_goals simp [Step.measure]
+
+private theorem Pending.resume_measure (pending : Pending) (outcomes : Array ToolOutcome) :
+    (pending.resume outcomes).measure < (Step.runTools pending).measure := by
+  unfold Pending.resume
+  split
+  · simp [giveUp, Step.measure]
+  · next n h => simp [Step.measure]; omega
+
+/-- Closes off a history a failed turn left ending on tool results, which the APIs here refuse to
+continue from because they require roles to alternate. Any other history is returned as it is. -/
+def closeOff (history : Array Msg) (text : String) : Array Msg :=
+  match history.back? with
+  | some (.toolResult ..) => history.push (.assistant #[.text text])
+  | _ => history
+
+/-- A tool offering `runStructured` is run through that alone, and the string half of the result is
 its JSON compressed, so what the providers that can only carry a string send is the same answer as
-what Converse sends as JSON. -/
+what Converse sends as JSON. `.runningTool` is not reported for a tool that is not there, because
+nothing runs. -/
 private def runCall [Monad m] (tools : Array (ToolImpl m)) (onProgress : Progress → m Unit)
-    (tc : ToolCall) : m (Except String (String × Option Json)) :=
+    (tc : ToolCall) : m ToolOutcome :=
   match tools.find? (·.tool.name == tc.name) with
   | some impl => do
     onProgress (.runningTool tc.name)
     match impl.runStructured with
     | some run => return (← run tc.input).map fun j => (j.compress, some j)
     | none => return (← impl.run tc.input).map fun output => (output, none)
-  | none => pure (.error s!"there is no tool called {tc.name}")
+  | none => pure (noSuchTool tc)
 
-private def go [Monad m] (provider : Provider m) (tools : Array (ToolImpl m))
-    (onProgress : Progress → m Unit) (history : Array Msg) (iterationsLeft : Nat) :
-    m (Except LoopFailure (Array Msg × String)) := do
-  if iterationsLeft == 0 then
-    let text := "The model kept calling tools without finishing; giving up."
-    return .ok (history.push (Msg.assistant text), text)
-  onProgress .thinking
-  match ← provider.sendRequest history (tools.map (·.tool)) with
-  | .error e => return .error { message := e, history }
-  | .ok resp =>
-    let history := history.push (Msg.assistant resp.text resp.toolCalls)
-    if resp.isRefusal then
-      return .ok (history, "The model declined to respond to that.")
-    else if resp.isTruncated then
-      return .ok (history, "The model's reply was cut off before it finished; try again.")
-    else if resp.toolCalls.isEmpty then
-      return .ok (history, resp.text)
-    else
-      let mut history := history
-      for tc in resp.toolCalls do
-        let (output, isError, structured) ← match ← runCall tools onProgress tc with
-          | .ok (output, structured) => pure (output, false, structured)
-          | .error text => pure (text, true, none)
-        history := history.push (Msg.toolResult tc.id output isError structured)
-      go provider tools onProgress history (iterationsLeft - 1)
-termination_by iterationsLeft
-decreasing_by simp_all; omega
+private def drive [Monad m] (provider : Provider m) (tools : Array (ToolImpl m))
+    (onProgress : Progress → m Unit) (step : Step) :
+    m (Except LoopFailure (Array Msg × String)) :=
+  match step with
+  | .done history text => return .ok (history, text)
+  | .send turn => do
+    onProgress .thinking
+    match ← provider.sendRequest turn.history (tools.map (·.tool)) with
+    | .error e => return .error { message := e, history := turn.history }
+    | .ok reply => drive provider tools onProgress (turn.receive reply)
+  | .runTools pending => do
+    let outcomes ← pending.calls.mapM (runCall tools onProgress)
+    drive provider tools onProgress (pending.resume outcomes)
+termination_by step.measure
+decreasing_by
+  · exact Turn.receive_measure turn reply
+  · exact Pending.resume_measure pending outcomes
 
 /-- Keeps sending until the model stops asking for tools, replies, refuses, its reply is
-truncated, or `config.maxIterations` is exhausted, whichever happens first.
+truncated, or `config.maxIterations` is exhausted, whichever happens first. It is the step
+functions above driven in `m`, so it follows their rules.
 
 `tools` is what the model is offered and what answers it in one: the catalogue sent with each
 request is `tools.map (·.tool)`, and each call the model makes is dispatched to the `run` of the
 first entry whose `tool.name` matches, so duplicate names shadow later ones. A call naming a tool
-that is not there never reaches the caller: the loop records a `.toolResult` for it flagged as an
-error, saying the tool does not exist, and carries on.
+that is not there never reaches the caller: it is answered as `unknownTool?` answers it.
 
 `ToolImpl.run` returning `.error` becomes a `.toolResult` flagged as an error too, with the error
 text as its output. An entry with a `runStructured` is dispatched to that instead, and its result
@@ -102,6 +191,6 @@ reason `LoopFailure` gives. -/
 def converseLoop [Monad m] (provider : Provider m) (tools : Array (ToolImpl m))
     (history : Array Msg) (config : LoopConfig m := {}) :
     m (Except LoopFailure (Array Msg × String)) :=
-  go provider tools config.onProgress history config.maxIterations
+  drive provider tools config.onProgress (Turn.start history config.maxIterations)
 
 end LLMClient
