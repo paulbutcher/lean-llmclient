@@ -1,0 +1,9 @@
+name = "lasmtest"
+
+[[require]]
+name = "LLMClient"
+path = "../.."
+
+[[lean_exe]]
+name = "lasmtest"
+root = "Main"

@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [0.10.0] - 2026-11-02
 
 - `Config.extraHeaders` adds headers to every request, such as the one Anthropic requires from a browser.
 - `LLMClient.Core` is the library without curl, and `LLMClient.Fetch` adds a `Transport Async` over the browser's `fetch` for Lasm builds.

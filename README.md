@@ -121,3 +121,4 @@ Anything the page holds, an API key or AWS credentials, is visible to everyone w
 - `lake build` builds the library.
 - `lake test` runs the tests. They live in the `test/` subproject, which has its own lakefile and requires this package by path, so test-only dependencies never reach a downstream consumer.
 - The tests are pure JSON encode/decode checks against each provider's wire format, plus `test/Theorems.lean`, which proves the round-trip and message-shape invariants those formats depend on. Nothing makes a network call, so no API key is needed to run them.
+- `npm install && npm test` in `test/lasm/` builds `LLMClient.Fetch` with Lasm, which needs Node 24 or later, and runs it against a local server. It builds a copy of the working tree in the system temp directory, because Lasm writes into a path dependency's `.lake`, where a native build would then take Lasm's output as its own.
