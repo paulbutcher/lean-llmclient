@@ -1,5 +1,9 @@
 # Changelog
 
+## [0.12.1] - 2026-11-06
+
+- Chore: bump dependencies.
+
 ## [0.12.0] - 2026-11-02
 
 - `Pending.answerWith` runs a turn's tool calls in order, threading a state from each call to the next.
