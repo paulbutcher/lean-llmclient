@@ -6,11 +6,11 @@ import Lake
 open System Lake DSL
 
 package LLMClient where
-  version := v!"0.12.0"
+  version := v!"0.12.1"
   leanOptions := #[⟨`warningAsError, true⟩]
 
 require json from git "https://github.com/paulbutcher/lean-json"@"v0.3.1"
-require leancurl from git "https://github.com/paulbutcher/leancurl"@"v0.3.2"
+require leancurl from git "https://github.com/paulbutcher/leancurl"@"v0.3.3"
 require leanaws from git "https://github.com/paulbutcher/lean-aws"@"v0.3.2"
 
 @[default_target] lean_lib LLMClient
