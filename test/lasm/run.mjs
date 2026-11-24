@@ -137,7 +137,7 @@ async function inBrowser() {
         const text = message.text();
         lines.push(text);
         if (text === "All Lasm tests passed.") finish(true);
-        else if (text.includes("Lasm test(s) failed") || text.startsWith("Lasm.Web.background:")) {
+        else if (text.includes("Lasm test(s) failed") || text.startsWith("Lasm tests threw:")) {
           finish(false);
         }
       });

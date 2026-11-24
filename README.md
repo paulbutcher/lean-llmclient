@@ -140,7 +140,7 @@ The format is part of the library's interface: a change to it is recorded in the
 
 ## In the browser
 
-`LLMClient.Core` is everything except curl, and builds with [Lasm](https://github.com/Millillion/lasm) for the browser. `LLMClient.Fetch` adds `Fetch.transport`, a `Transport Async` over the browser's `fetch`; it imports `Lasm.Web`, so only Lasm can build it:
+`LLMClient.Core` is everything except curl, and builds with [Lasm](https://github.com/Millillion/lasm) for the browser. `LLMClient.Fetch` adds `Fetch.transport`, a `Transport Async` over the browser's `fetch`; it imports `Lasm.JS.Web.Fetch`, so only Lasm (0.10 or later) can build it:
 
 ```lean
 import LLMClient.Core

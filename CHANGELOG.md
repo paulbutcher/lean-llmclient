@@ -1,5 +1,9 @@
 # Changelog
 
+## [Unreleased]
+
+- Breaking: `LLMClient.Fetch` builds with Lasm 0.10, whose `Lasm.JS.Web.Fetch` replaces `Lasm.Web`.
+
 ## [0.12.0] - 2026-11-02
 
 - `Pending.answerWith` runs a turn's tool calls in order, threading a state from each call to the next.
