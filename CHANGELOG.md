@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [0.13.0] - 2026-11-24
 
 - Breaking: `LLMClient.Fetch` builds with Lasm 0.10, whose `Lasm.JS.Web.Fetch` replaces `Lasm.Web`.
 
